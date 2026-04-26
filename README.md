@@ -23,12 +23,12 @@ python main.py
 
 1. Сборка образа:
 ```bash
-docker build -t gemini-mcp-proxy .
+docker build -t gemini-mcp-relay .
 ```
 
 2. Запуск контейнера:
 ```bash
-docker run -d -p 8000:8000 --name mcp-proxy gemini-mcp-proxy
+docker run -d -p 8000:8000 --name mcp-relay gemini-mcp-relay
 ```
 
 ## Настройка (Переменные окружения)
