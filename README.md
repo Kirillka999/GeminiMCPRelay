@@ -39,7 +39,7 @@ docker run -d -p 8000:8000 --name mcp-relay gemini-mcp-relay
 
 **Пример для Docker:**
 ```bash
-docker run -d -p 8000:8000 -e GEMINI_BASE_URL="https://generativelanguage.googleapis.com" gemini-mcp-proxy
+docker run -d -p 8000:8000 -e GEMINI_BASE_URL="https://generativelanguage.googleapis.com" gemini-mcp-relay
 ```
 *(Если оставить её пустой, прокси автоматически будет стучаться в стандартные API-серверы Google).*
 
@@ -59,7 +59,7 @@ from google import genai
 # Для приватных серверов можно передать опциональный словарь 'headers' с токенами авторизации.
 mcp_config = {
     "math_server": {
-        "url": "https://math-mcp.fastmcp.app/mcp"
+        "url": "https://mathematics.fastmcp.app/mcp"
     },
     "private_database": {
         "url": "https://api.mycompany.com/mcp",
