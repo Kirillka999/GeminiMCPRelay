@@ -1,4 +1,4 @@
-# Gemini MCP-Hero Proxy
+# Gemini MCP Relay
 
 Прокси-сервер на FastAPI для интеграции Model Context Protocol (MCP) с Google Gemini API.
 
