@@ -1,62 +1,62 @@
 # Gemini MCP Relay
 
-Прокси-сервер на FastAPI для интеграции Model Context Protocol (MCP) с Google Gemini API.
+A FastAPI proxy server for integrating the Model Context Protocol (MCP) with the Google Gemini API.
 
-Этот сервер выступает в роли моста между клиентским приложением и серверами Google. Он перехватывает официальный формат запросов Google, получает инструменты с удаленных MCP-серверов, конвертирует их в Gemini, и самостоятельно оркестрирует цикл выполнения `function_calling`, стримя финальный результат клиенту.
+This server acts as a bridge between the client application and Google's servers. It intercepts the official Google request format, fetches tools from remote MCP servers, converts them into the Gemini format, and autonomously orchestrates the `function_calling` execution loop, streaming the final result back to the client.
 
-## Установка и запуск
+## Installation and Setup
 
-### Способ 1. Локально (Python VENV)
-1. Убедитесь, что установлены зависимости:
+### Method 1. Locally (Python venv)
+1. Ensure dependencies are installed:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Запуск сервера:
+2. Run the server:
 ```bash
 python main.py
 ```
-Сервер запустится на `http://0.0.0.0:8000`.
+The server will start at `http://0.0.0.0:8000`.
 
-### Способ 2. Через Docker (Рекомендуется для продакшена)
-Прокси полностью готов к деплою в Docker-контейнере.
+### Method 2. Via Docker (Recommended for production)
+The proxy is fully ready for deployment in a Docker container.
 
-1. Сборка образа:
+1. Build the image:
 ```bash
 docker build -t gemini-mcp-relay .
 ```
 
-2. Запуск контейнера:
+2. Run the container:
 ```bash
 docker run -d -p 8000:8000 --name mcp-relay gemini-mcp-relay
 ```
 
-## Настройка (Переменные окружения)
+## Configuration (Environment Variables)
 
-При запуске (как локально, так и в Docker) вы можете переопределить базовый URL, на который прокси будет отправлять запросы.
+When starting the server (both locally and in Docker), you can override the base URL to which the proxy will send requests.
 
-Для этого задайте переменную окружения `GEMINI_BASE_URL`:
+To do this, set the `GEMINI_BASE_URL` environment variable:
 
-**Пример для Docker:**
+**Docker example:**
 ```bash
 docker run -d -p 8000:8000 -e GEMINI_BASE_URL="https://generativelanguage.googleapis.com" gemini-mcp-relay
 ```
-*(Если оставить её пустой, прокси автоматически будет стучаться в стандартные API-серверы Google).*
+*(If left empty, the proxy will automatically route requests to the standard Google API servers).*
 
-## Использование с клиентского приложения
+## Usage from a Client Application
 
-Сервер полностью эмулирует Google API. Все, что вам нужно сделать на клиенте — это подменить `base_url` на адрес прокси и передать Base64-закодированный заголовок `X-MCP-Servers`.
+The server fully emulates the Google API. All you need to do on the client side is replace the `base_url` with the proxy's address and pass a Base64-encoded `X-MCP-Servers` header.
 
-Пример на Python (официальный `google.genai` SDK):
+Python example (using the official `google.genai` SDK):
 
 ```python
 import base64
 import json
 from google import genai
 
-# 1. Формируем конфигурацию MCP серверов
-# Вы можете подключить несколько серверов. 
-# Для приватных серверов можно передать опциональный словарь 'headers' с токенами авторизации.
+# 1. Build the MCP servers configuration
+# You can connect multiple servers. 
+# For private servers, you can pass an optional 'headers' dictionary with authorization tokens.
 mcp_config = {
     "math_server": {
         "url": "https://mathematics.fastmcp.app/mcp"
@@ -70,19 +70,19 @@ mcp_config = {
 }
 mcp_header = base64.b64encode(json.dumps(mcp_config).encode("utf-8")).decode("utf-8")
 
-# 2. Подключаемся к нашему прокси
+# 2. Connect to our proxy
 client = genai.Client(
-    api_key="ВАШ_GEMINI_API_KEY", # Ключ уйдет на прокси, а прокси отдаст его в Google
+    api_key="YOUR_GEMINI_API_KEY", # The key will be sent to the proxy, and the proxy will pass it to Google
     http_options={
         "base_url": "http://127.0.0.1:8000",
         "headers": {"x-mcp-servers": mcp_header}
     }
 )
 
-# 3. Делаем обычный запрос (Прокси сам сходит на MCP, заберет тулы, выполнит их в цикле и вернет ответ)
+# 3. Make a standard request (The proxy will fetch tools from MCP, execute them in a loop, and return the response)
 response = client.models.generate_content_stream(
     model="gemini-2.5-flash",
-    contents="Посчитай квадратный корень из 144, а затем умножь результат на 10. Распиши по шагам.",
+    contents="Calculate the square root of 144, and then multiply the result by 10. Write down the steps.",
 )
 
 for chunk in response:
