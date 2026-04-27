@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import types
 
-from app.mcp_manager import get_mcp_adapters_and_tools
+from app.mcp_manager import get_mcp_adapters_and_tools, get_mcp_raw_tools
 from app.formatters import parse_request_payload
 from app.orchestrator import generate_content_loop, stream_generate_content_loop
 
@@ -15,6 +15,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 GEMINI_BASE_URL = os.environ.get("GEMINI_BASE_URL")
+
+@router.get("/v1/mcp/tools")
+async def list_mcp_tools(request: Request):
+    """
+    Returns a list of all available tools from the configured MCP servers.
+    The response format is designed for frontend consumption, providing
+    server names, tool names, descriptions, and their JSON schemas.
+    """
+    mcp_header = request.headers.get("x-mcp-servers")
+    if not mcp_header:
+        return {"tools": []}
+        
+    try:
+        tools = await get_mcp_raw_tools(mcp_header)
+        return {"tools": tools}
+    except Exception as e:
+        logger.error(f"Error fetching MCP tools: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 def _initialize_client_and_config(api_key: str, payload: dict, mcp_declarations: list) -> tuple:
     contents, config = parse_request_payload(payload)
@@ -39,7 +57,8 @@ async def generate_content(model_name: str, request: Request):
         raise HTTPException(status_code=401, detail="Missing API Key")
 
     mcp_header = request.headers.get("x-mcp-servers")
-    adapters_map, mcp_declarations = await get_mcp_adapters_and_tools(mcp_header)
+    excluded_header = request.headers.get("x-mcp-excluded-tools")
+    adapters_map, mcp_declarations = await get_mcp_adapters_and_tools(mcp_header, excluded_header)
 
     payload = await request.json()
     client, contents, config = _initialize_client_and_config(api_key, payload, mcp_declarations)
@@ -59,7 +78,8 @@ async def stream_generate_content(model_name: str, request: Request):
         raise HTTPException(status_code=401, detail="Missing API Key")
 
     mcp_header = request.headers.get("x-mcp-servers")
-    adapters_map, mcp_declarations = await get_mcp_adapters_and_tools(mcp_header)
+    excluded_header = request.headers.get("x-mcp-excluded-tools")
+    adapters_map, mcp_declarations = await get_mcp_adapters_and_tools(mcp_header, excluded_header)
 
     payload = await request.json()
     client, contents, config = _initialize_client_and_config(api_key, payload, mcp_declarations)

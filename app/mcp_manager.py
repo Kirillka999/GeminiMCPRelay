@@ -72,17 +72,26 @@ def patch_adapter(adapter: MCPToolAdapterGemini):
         
     adapter.process_function_calls_as_parts = clean_process_function_calls
 
-async def get_mcp_adapters_and_tools(mcp_header: str) -> tuple[dict, list[types.FunctionDeclaration]]:
+async def get_mcp_adapters_and_tools(mcp_header: str, excluded_tools_header: str = None) -> tuple[dict, list[types.FunctionDeclaration]]:
     adapters_map = {}
     all_declarations = []
     
     if not mcp_header:
         return adapters_map, all_declarations
         
+    excluded_tools = set()
+    if excluded_tools_header:
+        try:
+            decoded = base64.b64decode(excluded_tools_header).decode("utf-8")
+            excluded_tools = set(json.loads(decoded))
+        except Exception as e:
+            logger.warning(f"Failed to parse excluded tools header: {e}")
+            
     try:
         decoded_json = base64.b64decode(mcp_header).decode("utf-8")
         connections = json.loads(decoded_json)
         
+        server_configs = []
         for name, config in connections.items():
             if config.get("transport") == "stdio":
                 raise HTTPException(status_code=400, detail=f"Transport 'stdio' is not allowed.")
@@ -90,14 +99,21 @@ async def get_mcp_adapters_and_tools(mcp_header: str) -> tuple[dict, list[types.
             url = config.get("url")
             headers = config.get("headers")
             if url:
-                mcp_config = MCPServerConfig(url=url, name=name, headers=headers)
-                adapter = MCPToolAdapterGemini(mcp_config)
-                patch_adapter(adapter)
+                server_configs.append(MCPServerConfig(url=url, name=name, headers=headers))
                 
-                declarations = await adapter.get_function_declarations()
-                for decl in declarations:
-                    adapters_map[decl.name] = adapter
-                    all_declarations.append(decl)
+        if not server_configs:
+            return adapters_map, all_declarations
+            
+        # Create a single adapter for all servers to allow mcphero to resolve naming collisions
+        adapter = MCPToolAdapterGemini(server_configs)
+        patch_adapter(adapter)
+        
+        declarations = await adapter.get_function_declarations()
+        for decl in declarations:
+            if decl.name not in excluded_tools:
+                # The adapter internally knows which server owns which tool based on the name
+                adapters_map[decl.name] = adapter
+                all_declarations.append(decl)
                     
     except HTTPException:
         raise
@@ -106,3 +122,45 @@ async def get_mcp_adapters_and_tools(mcp_header: str) -> tuple[dict, list[types.
         raise HTTPException(status_code=400, detail=f"Failed to parse X-MCP-Servers: {str(e)}")
         
     return adapters_map, all_declarations
+
+async def get_mcp_raw_tools(mcp_header: str) -> list[dict]:
+    """
+    Parses the X-MCP-Servers header, connects to MCP servers, and returns a flat list
+    of raw tool definitions for frontend consumption.
+    """
+    if not mcp_header:
+        return []
+        
+    try:
+        decoded_json = base64.b64decode(mcp_header).decode("utf-8")
+        connections = json.loads(decoded_json)
+        
+        server_configs = []
+        for name, config in connections.items():
+            if config.get("transport") == "stdio":
+                continue # Skip stdio for tool listing
+                
+            url = config.get("url")
+            headers = config.get("headers")
+            if url:
+                server_configs.append(MCPServerConfig(url=url, name=name, headers=headers))
+                
+        all_tools = []
+        if server_configs:
+            # Create a single adapter to properly resolve collision names
+            adapter = MCPToolAdapterGemini(server_configs)
+            
+            # Fetch raw tools using base adapter method
+            tools = await adapter.discover_tools()
+            for t in tools:
+                all_tools.append({
+                    "serverName": t.server_name,
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema
+                })
+                    
+        return all_tools
+    except Exception as e:
+        logger.error(f"Failed to list MCP tools: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to list MCP tools: {str(e)}")
