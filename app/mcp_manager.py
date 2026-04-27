@@ -35,22 +35,36 @@ def patch_adapter(adapter: MCPToolAdapterGemini):
                 # Cleanup JSON-RPC wrapping
                 if "result" in resp:
                     res_val = resp["result"]
+                    
                     if isinstance(res_val, dict):
+                        is_error = res_val.get("isError", False)
+                        
+                        # Handle structured content (e.g., Xcode MCP bridge)
                         if "structuredContent" in res_val:
-                            part.function_response.response = {"result": res_val["structuredContent"]}
-                            continue
+                            final_val = res_val["structuredContent"]
+                        # Handle standard MCP content array
                         elif "content" in res_val and isinstance(res_val["content"], list):
                             texts = [c.get("text") for c in res_val["content"] if c.get("type") == "text" and c.get("text")]
                             if texts:
                                 combined_text = "\n".join(texts)
                                 try:
-                                    parsed_text = json.loads(combined_text)
-                                    part.function_response.response = {"result": parsed_text}
+                                    final_val = json.loads(combined_text)
                                 except json.JSONDecodeError:
-                                    part.function_response.response = {"result": combined_text}
-                                continue
-                    
-                    part.function_response.response = {"result": res_val}
+                                    final_val = combined_text
+                            else:
+                                final_val = "Empty or non-text response"
+                        else:
+                            final_val = res_val
+                            
+                        # Route to error or result based on MCP isError flag
+                        if is_error:
+                            part.function_response.response = {"error": final_val}
+                        else:
+                            part.function_response.response = {"result": final_val}
+                    else:
+                        part.function_response.response = {"result": res_val}
+                        
+                # Handle JSON-RPC level errors
                 elif "error" in resp:
                     part.function_response.response = {"error": resp["error"]}
                     
