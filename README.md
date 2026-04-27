@@ -85,6 +85,33 @@ response = client.models.generate_content_stream(
     contents="Calculate the square root of 144, and then multiply the result by 10. Write down the steps.",
 )
 
+# 4. Read the text stream (SDK might print warnings about non-text parts, but it works)
 for chunk in response:
-    print(chunk.text, end="", flush=True)
+    if chunk.text:
+        print(chunk.text, end="", flush=True)
+```
+
+### Advanced: Tracing Tool Execution
+
+Because the proxy executes tools autonomously, it injects the `function_call` and `function_response` data directly into the stream chunks so your client application can see exactly what tools were used behind the scenes.
+
+You can inspect these parts by iterating through the chunk structure:
+
+```python
+for chunk in response:
+    if chunk.candidates and chunk.candidates[0].content and chunk.candidates[0].content.parts:
+        for part in chunk.candidates[0].content.parts:
+            # 1. Catch the tool execution request
+            if part.function_call:
+                print(f"\n[🔧 Tool Executed by Relay: {part.function_call.name}]")
+                print(f"Arguments: {part.function_call.args}")
+            
+            # 2. Catch the tool execution result
+            elif part.function_response:
+                print(f"[✅ Tool Result ({part.function_response.name})]:")
+                print(f"{part.function_response.response}\n")
+            
+            # 3. Catch the standard model text output
+            elif part.text:
+                print(part.text, end="", flush=True)
 ```

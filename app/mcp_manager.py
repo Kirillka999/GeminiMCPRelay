@@ -50,6 +50,44 @@ def patch_adapter(adapter: MCPToolAdapterGemini):
         
     adapter._to_gemini_declaration = safe_to_gemini
 
+    # Patch process_function_calls_as_parts to clean up JSON-RPC envelope
+    original_process = adapter.process_function_calls_as_parts
+    
+    async def clean_process_function_calls(calls):
+        parts = await original_process(calls)
+        for part in parts:
+            if part.function_response and part.function_response.response:
+                resp = part.function_response.response
+                
+                # Cleanup JSON-RPC wrapping
+                if "result" in resp:
+                    res_val = resp["result"]
+                    if isinstance(res_val, dict):
+                        if "structuredContent" in res_val:
+                            # Prefer structured content if available
+                            part.function_response.response = {"result": res_val["structuredContent"]}
+                            continue
+                        elif "content" in res_val and isinstance(res_val["content"], list):
+                            # Try to extract text content
+                            texts = [c.get("text") for c in res_val["content"] if c.get("type") == "text" and c.get("text")]
+                            if texts:
+                                # Often the text itself is JSON stringified, we can attempt to parse it
+                                combined_text = "\n".join(texts)
+                                try:
+                                    parsed_text = json.loads(combined_text)
+                                    part.function_response.response = {"result": parsed_text}
+                                except json.JSONDecodeError:
+                                    part.function_response.response = {"result": combined_text}
+                                continue
+                    
+                    part.function_response.response = {"result": res_val}
+                elif "error" in resp:
+                    part.function_response.response = {"error": resp["error"]}
+                    
+        return parts
+        
+    adapter.process_function_calls_as_parts = clean_process_function_calls
+
 async def get_mcp_adapters_and_tools(mcp_header: str) -> tuple[dict, list[types.FunctionDeclaration]]:
     """
     Parses the X-MCP-Servers header, connects via mcphero, and collects tools.
