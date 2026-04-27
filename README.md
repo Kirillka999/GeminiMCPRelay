@@ -91,6 +91,33 @@ for chunk in response:
         print(chunk.text, end="", flush=True)
 ```
 
+### Retrieving Available Tools
+
+If you need to retrieve a list of all available tools and their JSON schemas from the configured MCP servers, you can use the `GET /v1/mcp/tools` endpoint. 
+
+You must provide the `X-MCP-Servers` header just like in standard generation requests. The endpoint will connect to the servers and return a unified list of tool schemas:
+
+```bash
+curl http://127.0.0.1:8000/v1/mcp/tools \
+  -H "X-MCP-Servers: <BASE64_ENCODED_CONFIG>"
+```
+
+### Disabling Specific Tools
+
+You can manually prevent specific tools from being passed to the model by using the `X-MCP-Excluded-Tools` header. This is useful if an MCP server exposes many tools but you only want the model to have access to a specific subset.
+
+Pass a Base64-encoded JSON array of tool names (strings) you want to exclude:
+
+```python
+import base64
+import json
+
+excluded_tools = ["unsafe_delete_tool", "admin_panel_access"]
+excluded_header = base64.b64encode(json.dumps(excluded_tools).encode("utf-8")).decode("utf-8")
+
+# Add "x-mcp-excluded-tools": excluded_header to your http_options headers
+```
+
 ### Advanced: Tracing Tool Execution
 
 Because the proxy executes tools autonomously, it injects the `function_call` and `function_response` data directly into the stream chunks so your client application can see exactly what tools were used behind the scenes.
