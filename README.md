@@ -57,9 +57,18 @@ from google import genai
 # 1. Build the MCP servers configuration
 # You can connect multiple servers. 
 # For private servers, you can pass an optional 'headers' dictionary with authorization tokens.
+# The proxy supports both standard "http" (streamable HTTP) and "sse" connection types.
 mcp_config = {
     "math_server": {
         "url": "https://mathematics.fastmcp.app/mcp"
+        # "type" is omitted, defaults to "http" (streamable HTTP)
+    },
+    "exa_search": {
+        "url": "https://mcp.exa.ai/mcp",
+        "type": "sse", # explicitly tell the proxy to use a pure SSE transport connection
+        "headers": {
+            "Authorization": "Bearer YOUR_SECRET_TOKEN"
+        }
     },
     "private_database": {
         "url": "https://api.mycompany.com/mcp",

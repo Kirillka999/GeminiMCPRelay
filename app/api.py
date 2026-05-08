@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import types
 
-from app.mcp_manager import get_mcp_adapters_and_tools, get_mcp_raw_tools
+from app.mcp_manager import MCPConnectionManager, get_mcp_raw_tools
 from app.formatters import parse_request_payload
 from app.orchestrator import generate_content_loop, stream_generate_content_loop
 
@@ -58,17 +58,24 @@ async def generate_content(model_name: str, request: Request):
 
     mcp_header = request.headers.get("x-mcp-servers")
     excluded_header = request.headers.get("x-mcp-excluded-tools")
-    adapters_map, mcp_declarations = await get_mcp_adapters_and_tools(mcp_header, excluded_header)
-
-    payload = await request.json()
-    client, contents, config = _initialize_client_and_config(api_key, payload, mcp_declarations)
     
+    manager = MCPConnectionManager(mcp_header, excluded_header)
     try:
-        response_dict = await generate_content_loop(client, model_name, contents, config, adapters_map)
+        await manager.connect()
+        
+        payload = await request.json()
+        client, contents, config = _initialize_client_and_config(api_key, payload, manager.mcp_declarations)
+        
+        response_dict = await generate_content_loop(client, model_name, contents, config, manager.adapters_map)
         return response_dict
     except Exception as e:
         logger.error(f"Error during generation: {e}", exc_info=True)
+        # re-raise HTTP exceptions (e.g. from manager.connect)
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await manager.close()
 
 
 @router.post("/v1beta/models/{model_name}:streamGenerateContent")
@@ -79,18 +86,24 @@ async def stream_generate_content(model_name: str, request: Request):
 
     mcp_header = request.headers.get("x-mcp-servers")
     excluded_header = request.headers.get("x-mcp-excluded-tools")
-    adapters_map, mcp_declarations = await get_mcp_adapters_and_tools(mcp_header, excluded_header)
-
+    
     payload = await request.json()
-    client, contents, config = _initialize_client_and_config(api_key, payload, mcp_declarations)
 
     async def event_generator():
+        manager = MCPConnectionManager(mcp_header, excluded_header)
         try:
-            async for event in stream_generate_content_loop(client, model_name, contents, config, adapters_map):
+            await manager.connect()
+            client, contents, config = _initialize_client_and_config(api_key, payload, manager.mcp_declarations)
+            
+            async for event in stream_generate_content_loop(client, model_name, contents, config, manager.adapters_map):
                 yield event
         except Exception as e:
             logger.error(f"Error during streaming generation: {e}", exc_info=True)
             error_json = {"error": {"code": 500, "message": str(e), "status": "INTERNAL"}}
             yield f"data: {json.dumps(error_json, ensure_ascii=False)}\n\n"
+
+
+        finally:
+            await manager.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
