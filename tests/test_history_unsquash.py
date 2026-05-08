@@ -53,7 +53,7 @@ def test_real_chat_history_unsquashing(fake_google_server):
     mcp_config = {"math_server": {"url": "https://mathematics.fastmcp.app/mcp"}}
     mcp_header = base64.b64encode(json.dumps(mcp_config).encode('utf-8')).decode('utf-8')
 
-    # STEP 1: Perform a real request via ngrok to generate an actual tool execution history
+    # STEP 1: Perform a real request to generate an actual tool execution history
     client = genai.Client(
         api_key=os.environ.get("TEST_GEMINI_API_KEY"),
         http_options={

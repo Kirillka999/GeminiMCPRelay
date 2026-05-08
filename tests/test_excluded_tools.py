@@ -77,7 +77,7 @@ def test_excluded_tools(fake_google_server):
             for func_decl in tool_obj.get("functionDeclarations", []):
                 assert func_decl["name"] != "calculate_expression", "The tool 'calculate_expression' was sent to Google despite being excluded!"
                 
-    # STEP 2: Make a real request via ngrok proxy to ensure the model cannot call it
+    # STEP 2: Make a real request to ensure the model cannot call it
     client = genai.Client(
         api_key=os.environ.get("TEST_GEMINI_API_KEY"),
         http_options={
