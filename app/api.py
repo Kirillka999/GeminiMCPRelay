@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import types
 
-from app.mcp_manager import MCPConnectionManager, get_mcp_raw_tools
+from app.mcp_manager import MCPConnectionManager
 from app.formatters import parse_request_payload
 from app.orchestrator import generate_content_loop, stream_generate_content_loop
 
@@ -28,8 +28,12 @@ async def list_mcp_tools(request: Request):
         return {"tools": []}
         
     try:
-        tools = await get_mcp_raw_tools(mcp_header)
-        return {"tools": tools}
+        manager = MCPConnectionManager(mcp_header)
+        try:
+            await manager.connect(fetch_raw_tools=True)
+            return {"tools": manager.raw_tools}
+        finally:
+            await manager.close()
     except Exception as e:
         logger.error(f"Error fetching MCP tools: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
