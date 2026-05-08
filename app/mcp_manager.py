@@ -28,7 +28,10 @@ def patch_adapter(adapter: MCPToolAdapterGemini):
     
     async def clean_process_function_calls(calls):
         parts = await original_process(calls)
-        for part in parts:
+        for call, part in zip(calls, parts):
+            if part.function_response:
+                part.function_response.id = call.id
+                
             if part.function_response and part.function_response.response:
                 resp = part.function_response.response
                 

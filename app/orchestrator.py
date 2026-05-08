@@ -38,10 +38,12 @@ async def generate_content_loop(client, model_name: str, contents: list[types.Co
                 response_parts.extend(parts)
             else:
                 logger.warning(f"Tool '{fc.name}' not found in provided MCP adapters.")
-                response_parts.append(types.Part.from_function_response(
+                fallback_part = types.Part.from_function_response(
                     name=fc.name, 
                     response={"error": "Tool not found"}
-                ))
+                )
+                fallback_part.function_response.id = fc.id
+                response_parts.append(fallback_part)
                 
         current_contents.append(types.Content(role="user", parts=response_parts))
         accumulated_parts.extend(response_parts)
@@ -87,10 +89,12 @@ async def stream_generate_content_loop(client, model_name: str, contents: list[t
                 parts = await adapter.process_function_calls_as_parts([fc])
                 response_parts.extend(parts)
             else:
-                response_parts.append(types.Part.from_function_response(
+                fallback_part = types.Part.from_function_response(
                     name=fc.name, 
                     response={"error": "Tool not found"}
-                ))
+                )
+                fallback_part.function_response.id = fc.id
+                response_parts.append(fallback_part)
         
         current_contents.append(types.Content(role="user", parts=response_parts))
         
