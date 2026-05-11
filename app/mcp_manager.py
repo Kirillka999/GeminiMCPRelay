@@ -147,16 +147,24 @@ class MCPConnectionManager:
                 adapter = MCPServerAdapter(name, session)
                 
                 tools_response = await session.list_tools()
-                valid_tools = [t for t in tools_response.tools if t.name not in excluded_tools]
+                valid_tools = []
+                for t in tools_response.tools:
+                    if t.name in excluded_tools or f"{safe_server_name}_{t.name}" in excluded_tools:
+                        continue
+                    valid_tools.append(t)
                 
                 capabilities = session.get_server_capabilities()
                 has_resources = bool(capabilities and getattr(capabilities, "resources", None))
+                
+                has_list = has_resources and "list_resources" not in excluded_tools and f"{safe_server_name}_list_resources" not in excluded_tools
+                has_read = has_resources and "read_resource" not in excluded_tools and f"{safe_server_name}_read_resource" not in excluded_tools
 
                 for t in valid_tools:
                     tool_name_counts[t.name] = tool_name_counts.get(t.name, 0) + 1
                     
-                if has_resources:
+                if has_list:
                     tool_name_counts["list_resources"] = tool_name_counts.get("list_resources", 0) + 1
+                if has_read:
                     tool_name_counts["read_resource"] = tool_name_counts.get("read_resource", 0) + 1
 
                 server_data.append({
@@ -164,7 +172,8 @@ class MCPConnectionManager:
                     "safe_name": safe_server_name,
                     "adapter": adapter,
                     "tools": valid_tools,
-                    "has_resources": has_resources
+                    "has_list": has_list,
+                    "has_read": has_read
                 })
                         
             except Exception as e:
@@ -199,36 +208,35 @@ class MCPConnectionManager:
                     fetch_raw_tools=fetch_raw_tools
                 )
 
-            if data["has_resources"]:
-                list_name = f"{safe_name}_list_resources" if tool_name_counts["list_resources"] > 1 else "list_resources"
-                read_name = f"{safe_name}_read_resource" if tool_name_counts["read_resource"] > 1 else "read_resource"
+            list_name = f"{safe_name}_list_resources" if tool_name_counts.get("list_resources", 0) > 1 else "list_resources"
+            read_name = f"{safe_name}_read_resource" if tool_name_counts.get("read_resource", 0) > 1 else "read_resource"
 
-                # Always register with adapter to be safe, even if excluded from model
-                adapter.register_resource_tools(list_name, read_name)
+            # Always register with adapter to be safe, even if excluded from model
+            adapter.register_resource_tools(list_name, read_name)
 
-                if list_name not in excluded_tools:
-                    self.adapters_map[list_name] = adapter
-                    self._append_tool_declarations(
-                        mapped_name=list_name,
-                        description=f"List available resources from the {server_name} server.",
-                        schema={"type": "object", "properties": {}},
-                        server_name=server_name,
-                        fetch_raw_tools=fetch_raw_tools
-                    )
+            if data.get("has_list"):
+                self.adapters_map[list_name] = adapter
+                self._append_tool_declarations(
+                    mapped_name=list_name,
+                    description=f"List available resources from the {server_name} server.",
+                    schema={"type": "object", "properties": {}},
+                    server_name=server_name,
+                    fetch_raw_tools=fetch_raw_tools
+                )
 
-                if read_name not in excluded_tools:
-                    self.adapters_map[read_name] = adapter
-                    self._append_tool_declarations(
-                        mapped_name=read_name,
-                        description=f"Read a specific resource from the {server_name} server using its URI.",
-                        schema={
-                            "type": "object",
-                            "properties": {"uri": {"type": "string", "description": "The URI of the resource to read"}},
-                            "required": ["uri"]
-                        },
-                        server_name=server_name,
-                        fetch_raw_tools=fetch_raw_tools
-                    )
+            if data.get("has_read"):
+                self.adapters_map[read_name] = adapter
+                self._append_tool_declarations(
+                    mapped_name=read_name,
+                    description=f"Read a specific resource from the {server_name} server using its URI.",
+                    schema={
+                        "type": "object",
+                        "properties": {"uri": {"type": "string", "description": "The URI of the resource to read"}},
+                        "required": ["uri"]
+                    },
+                    server_name=server_name,
+                    fetch_raw_tools=fetch_raw_tools
+                )
 
     def _append_tool_declarations(self, mapped_name: str, description: str, schema: dict, server_name: str, fetch_raw_tools: bool):
         decl = types.FunctionDeclaration(
