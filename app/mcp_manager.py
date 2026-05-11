@@ -17,20 +17,54 @@ class MCPServerAdapter:
         self.name = name
         self.session = session
         self.tool_mappings = {}  # mapped_name -> original_mcp_name
+        self.list_resources_tool_name = None
+        self.read_resource_tool_name = None
 
     def register_tool(self, original_name: str, mapped_name: str):
         self.tool_mappings[mapped_name] = original_name
+
+    def register_resource_tools(self, list_name: str, read_name: str):
+        self.list_resources_tool_name = list_name
+        self.read_resource_tool_name = read_name
 
     async def process_function_calls_as_parts(self, calls: list) -> list:
         parts = []
         for call in calls:
             gemini_name = call.name
-            mcp_name = self.tool_mappings.get(gemini_name, gemini_name)
             
             try:
-                result = await self.session.call_tool(mcp_name, call.args)
-                final_val = self._extract_result_content(result)
-                response_key = "error" if result.isError else "result"
+                if gemini_name == self.list_resources_tool_name:
+                    res = await self.session.list_resources()
+                    all_resources = []
+                    for r in res.resources:
+                        all_resources.append({
+                            "uri": str(r.uri),
+                            "name": getattr(r, "name", ""),
+                            "description": r.description or "",
+                            "mimeType": r.mimeType or ""
+                        })
+                    final_val = all_resources
+                    response_key = "result"
+                    
+                elif gemini_name == self.read_resource_tool_name:
+                    uri = call.args.get("uri")
+                    if not uri:
+                        raise ValueError("Missing 'uri' argument")
+                    res = await self.session.read_resource(uri)
+                    texts = []
+                    for content in res.contents:
+                        if hasattr(content, "text") and content.text:
+                            texts.append(content.text)
+                        elif hasattr(content, "blob") and content.blob:
+                            texts.append(f"[Binary Blob: {getattr(content, 'mimeType', 'unknown')}]")
+                    final_val = "\n".join(texts)
+                    response_key = "result"
+                    
+                else:
+                    mcp_name = self.tool_mappings.get(gemini_name, gemini_name)
+                    result = await self.session.call_tool(mcp_name, call.args)
+                    final_val = self._extract_result_content(result)
+                    response_key = "error" if getattr(result, "isError", False) else "result"
                 
                 part = types.Part.from_function_response(
                     name=gemini_name,
@@ -38,7 +72,7 @@ class MCPServerAdapter:
                 )
                 
             except Exception as e:
-                logger.error(f"Error calling tool {mcp_name} on {self.name}: {e}", exc_info=True)
+                logger.error(f"Error calling tool {gemini_name} on {self.name}: {e}", exc_info=True)
                 part = types.Part.from_function_response(
                     name=gemini_name,
                     response={"error": str(e)}
@@ -84,8 +118,14 @@ class MCPConnectionManager:
         excluded_tools = self._parse_excluded_tools()
         connections = self._parse_connections()
 
-        # Keep track of global names to avoid collisions
-        global_tool_names = set()
+        server_data, tool_name_counts = await self._gather_servers_data(connections, excluded_tools, fetch_raw_tools)
+        self._register_gathered_tools(server_data, tool_name_counts, fetch_raw_tools)
+                
+        self._connected = True
+
+    async def _gather_servers_data(self, connections: dict, excluded_tools: set, fetch_raw_tools: bool) -> tuple[list, dict]:
+        server_data = []
+        tool_name_counts = {}
 
         for name, config in connections.items():
             if config.get("command") or config.get("transport") == "stdio":
@@ -102,21 +142,106 @@ class MCPConnectionManager:
                 session = await self.stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await session.initialize()
                 
+                import re
+                safe_server_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name).lower()
                 adapter = MCPServerAdapter(name, session)
-                await self._register_server_tools(
-                    adapter, 
-                    session, 
-                    name, 
-                    excluded_tools, 
-                    global_tool_names, 
-                    fetch_raw_tools
-                )
+                
+                tools_response = await session.list_tools()
+                valid_tools = [t for t in tools_response.tools if t.name not in excluded_tools]
+                
+                capabilities = session.get_server_capabilities()
+                has_resources = bool(capabilities and getattr(capabilities, "resources", None))
+
+                for t in valid_tools:
+                    tool_name_counts[t.name] = tool_name_counts.get(t.name, 0) + 1
+                    
+                if has_resources:
+                    tool_name_counts["list_resources"] = tool_name_counts.get("list_resources", 0) + 1
+                    tool_name_counts["read_resource"] = tool_name_counts.get("read_resource", 0) + 1
+
+                server_data.append({
+                    "name": name,
+                    "safe_name": safe_server_name,
+                    "adapter": adapter,
+                    "tools": valid_tools,
+                    "has_resources": has_resources
+                })
                         
             except Exception as e:
                 logger.error(f"Failed to connect or fetch tools from MCP server '{name}': {e}", exc_info=True)
+                if fetch_raw_tools:
+                    continue
                 raise HTTPException(status_code=502, detail=f"Failed to connect to MCP server '{name}': {str(e)}")
                 
-        self._connected = True
+        return server_data, tool_name_counts
+
+    def _register_gathered_tools(self, server_data: list, tool_name_counts: dict, fetch_raw_tools: bool):
+        for data in server_data:
+            server_name = data["name"]
+            safe_name = data["safe_name"]
+            adapter = data["adapter"]
+            
+            for tool in data["tools"]:
+                mapped_name = f"{safe_name}_{tool.name}" if tool_name_counts[tool.name] > 1 else tool.name
+                
+                adapter.register_tool(tool.name, mapped_name)
+                self.adapters_map[mapped_name] = adapter
+                
+                input_schema = tool.inputSchema if hasattr(tool, "inputSchema") else tool.input_schema
+                if "type" not in input_schema:
+                    input_schema["type"] = "object"
+                    
+                self._append_tool_declarations(
+                    mapped_name=mapped_name,
+                    description=tool.description or "",
+                    schema=input_schema,
+                    server_name=server_name,
+                    fetch_raw_tools=fetch_raw_tools
+                )
+
+            if data["has_resources"]:
+                list_name = f"{safe_name}_list_resources" if tool_name_counts["list_resources"] > 1 else "list_resources"
+                read_name = f"{safe_name}_read_resource" if tool_name_counts["read_resource"] > 1 else "read_resource"
+
+                adapter.register_resource_tools(list_name, read_name)
+                self.adapters_map[list_name] = adapter
+                self.adapters_map[read_name] = adapter
+
+                self._append_tool_declarations(
+                    mapped_name=list_name,
+                    description=f"List available resources from the {server_name} server.",
+                    schema={"type": "object", "properties": {}},
+                    server_name=server_name,
+                    fetch_raw_tools=fetch_raw_tools
+                )
+
+                self._append_tool_declarations(
+                    mapped_name=read_name,
+                    description=f"Read a specific resource from the {server_name} server using its URI.",
+                    schema={
+                        "type": "object",
+                        "properties": {"uri": {"type": "string", "description": "The URI of the resource to read"}},
+                        "required": ["uri"]
+                    },
+                    server_name=server_name,
+                    fetch_raw_tools=fetch_raw_tools
+                )
+
+    def _append_tool_declarations(self, mapped_name: str, description: str, schema: dict, server_name: str, fetch_raw_tools: bool):
+        decl = types.FunctionDeclaration(
+            name=mapped_name,
+            description=description,
+            parameters_json_schema=schema
+        )
+        self.mcp_declarations.append(decl)
+        
+        if fetch_raw_tools:
+            self.raw_tools.append({
+                "serverName": server_name,
+                "name": mapped_name,
+                "description": description,
+                "parameters": schema
+            })
 
     async def close(self):
         await self.stack.aclose()
@@ -163,44 +288,3 @@ class MCPConnectionManager:
             )
             
         return None
-
-    async def _register_server_tools(
-        self, 
-        adapter: MCPServerAdapter, 
-        session: ClientSession, 
-        server_name: str, 
-        excluded_tools: set, 
-        global_tool_names: set, 
-        fetch_raw_tools: bool
-    ):
-        tools_response = await session.list_tools()
-        for tool in tools_response.tools:
-            if tool.name in excluded_tools:
-                continue
-                
-            mapped_name = tool.name
-            if mapped_name in global_tool_names:
-                mapped_name = f"{server_name}_{tool.name}"
-            
-            global_tool_names.add(mapped_name)
-            adapter.register_tool(tool.name, mapped_name)
-            self.adapters_map[mapped_name] = adapter
-            
-            input_schema = tool.inputSchema if hasattr(tool, "inputSchema") else tool.input_schema
-            if "type" not in input_schema:
-                input_schema["type"] = "object"
-                
-            decl = types.FunctionDeclaration(
-                name=mapped_name,
-                description=tool.description or "",
-                parameters_json_schema=input_schema
-            )
-            self.mcp_declarations.append(decl)
-            
-            if fetch_raw_tools:
-                self.raw_tools.append({
-                    "serverName": server_name,
-                    "name": mapped_name,
-                    "description": tool.description or "",
-                    "parameters": input_schema
-                })
