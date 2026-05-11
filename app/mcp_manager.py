@@ -119,7 +119,7 @@ class MCPConnectionManager:
         connections = self._parse_connections()
 
         server_data, tool_name_counts = await self._gather_servers_data(connections, excluded_tools, fetch_raw_tools)
-        self._register_gathered_tools(server_data, tool_name_counts, fetch_raw_tools)
+        self._register_gathered_tools(server_data, tool_name_counts, excluded_tools, fetch_raw_tools)
                 
         self._connected = True
 
@@ -175,7 +175,7 @@ class MCPConnectionManager:
                 
         return server_data, tool_name_counts
 
-    def _register_gathered_tools(self, server_data: list, tool_name_counts: dict, fetch_raw_tools: bool):
+    def _register_gathered_tools(self, server_data: list, tool_name_counts: dict, excluded_tools: set, fetch_raw_tools: bool):
         for data in server_data:
             server_name = data["name"]
             safe_name = data["safe_name"]
@@ -203,29 +203,32 @@ class MCPConnectionManager:
                 list_name = f"{safe_name}_list_resources" if tool_name_counts["list_resources"] > 1 else "list_resources"
                 read_name = f"{safe_name}_read_resource" if tool_name_counts["read_resource"] > 1 else "read_resource"
 
+                # Always register with adapter to be safe, even if excluded from model
                 adapter.register_resource_tools(list_name, read_name)
-                self.adapters_map[list_name] = adapter
-                self.adapters_map[read_name] = adapter
 
-                self._append_tool_declarations(
-                    mapped_name=list_name,
-                    description=f"List available resources from the {server_name} server.",
-                    schema={"type": "object", "properties": {}},
-                    server_name=server_name,
-                    fetch_raw_tools=fetch_raw_tools
-                )
+                if list_name not in excluded_tools:
+                    self.adapters_map[list_name] = adapter
+                    self._append_tool_declarations(
+                        mapped_name=list_name,
+                        description=f"List available resources from the {server_name} server.",
+                        schema={"type": "object", "properties": {}},
+                        server_name=server_name,
+                        fetch_raw_tools=fetch_raw_tools
+                    )
 
-                self._append_tool_declarations(
-                    mapped_name=read_name,
-                    description=f"Read a specific resource from the {server_name} server using its URI.",
-                    schema={
-                        "type": "object",
-                        "properties": {"uri": {"type": "string", "description": "The URI of the resource to read"}},
-                        "required": ["uri"]
-                    },
-                    server_name=server_name,
-                    fetch_raw_tools=fetch_raw_tools
-                )
+                if read_name not in excluded_tools:
+                    self.adapters_map[read_name] = adapter
+                    self._append_tool_declarations(
+                        mapped_name=read_name,
+                        description=f"Read a specific resource from the {server_name} server using its URI.",
+                        schema={
+                            "type": "object",
+                            "properties": {"uri": {"type": "string", "description": "The URI of the resource to read"}},
+                            "required": ["uri"]
+                        },
+                        server_name=server_name,
+                        fetch_raw_tools=fetch_raw_tools
+                    )
 
     def _append_tool_declarations(self, mapped_name: str, description: str, schema: dict, server_name: str, fetch_raw_tools: bool):
         decl = types.FunctionDeclaration(
