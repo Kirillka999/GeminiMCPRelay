@@ -1,3 +1,4 @@
+import asyncio
 import json
 import base64
 import logging
@@ -34,7 +35,7 @@ class MCPServerAdapter:
             
             try:
                 if gemini_name == self.list_resources_tool_name:
-                    res = await self.session.list_resources()
+                    res = await asyncio.wait_for(self.session.list_resources(), timeout=30.0)
                     all_resources = []
                     for r in res.resources:
                         all_resources.append({
@@ -50,7 +51,7 @@ class MCPServerAdapter:
                     uri = call.args.get("uri")
                     if not uri:
                         raise ValueError("Missing 'uri' argument")
-                    res = await self.session.read_resource(uri)
+                    res = await asyncio.wait_for(self.session.read_resource(uri), timeout=120.0)
                     texts = []
                     for content in res.contents:
                         if hasattr(content, "text") and content.text:
@@ -62,7 +63,7 @@ class MCPServerAdapter:
                     
                 else:
                     mcp_name = self.tool_mappings.get(gemini_name, gemini_name)
-                    result = await self.session.call_tool(mcp_name, call.args)
+                    result = await asyncio.wait_for(self.session.call_tool(mcp_name, call.args), timeout=300.0)
                     final_val = self._extract_result_content(result)
                     response_key = "error" if getattr(result, "isError", False) else "result"
                 
@@ -140,13 +141,13 @@ class MCPConnectionManager:
                 read_stream, write_stream = streams[:2] if len(streams) >= 2 else streams
                 
                 session = await self.stack.enter_async_context(ClientSession(read_stream, write_stream))
-                await session.initialize()
+                await asyncio.wait_for(session.initialize(), timeout=20.0)
                 
                 import re
                 safe_server_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name).lower()
                 adapter = MCPServerAdapter(name, session)
                 
-                tools_response = await session.list_tools()
+                tools_response = await asyncio.wait_for(session.list_tools(), timeout=20.0)
                 valid_tools = []
                 for t in tools_response.tools:
                     if t.name in excluded_tools or f"{safe_server_name}_{t.name}" in excluded_tools:
