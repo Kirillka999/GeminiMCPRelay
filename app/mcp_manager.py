@@ -106,7 +106,7 @@ class MCPConnectionManager:
     def __init__(self, mcp_header: str, excluded_tools_header: str = None):
         self.mcp_header = mcp_header
         self.excluded_tools_header = excluded_tools_header
-        self.stack = AsyncExitStack()
+        self.server_stacks = []
         self.adapters_map = {}
         self.mcp_declarations = []
         self.raw_tools = []
@@ -136,11 +136,12 @@ class MCPConnectionManager:
             if not transport_ctx:
                 continue
 
+            server_stack = AsyncExitStack()
             try:
-                streams = await self.stack.enter_async_context(transport_ctx)
+                streams = await server_stack.enter_async_context(transport_ctx)
                 read_stream, write_stream = streams[:2] if len(streams) >= 2 else streams
                 
-                session = await self.stack.enter_async_context(ClientSession(read_stream, write_stream))
+                session = await server_stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await asyncio.wait_for(session.initialize(), timeout=20.0)
                 
                 import re
@@ -176,9 +177,17 @@ class MCPConnectionManager:
                     "has_list": has_list,
                     "has_read": has_read
                 })
+                
+                self.server_stacks.append(server_stack)
                         
             except BaseException as e:
                 logger.error(f"Failed to connect or fetch tools from MCP server '{name}': {e}", exc_info=True)
+                # Cleanup the failed isolated stack
+                try:
+                    await server_stack.aclose()
+                except BaseException:
+                    pass
+                    
                 if fetch_raw_tools:
                     continue
                 raise HTTPException(status_code=502, detail=f"Failed to connect to MCP server '{name}': {str(e)}")
@@ -256,10 +265,11 @@ class MCPConnectionManager:
             })
 
     async def close(self):
-        try:
-            await self.stack.aclose()
-        except Exception as e:
-            logger.warning(f"Ignored error during MCP connections cleanup: {e}")
+        for s in self.server_stacks:
+            try:
+                await s.aclose()
+            except BaseException as e:
+                logger.warning(f"Ignored error closing stack: {e}")
 
     def _parse_excluded_tools(self) -> set:
         if not self.excluded_tools_header:
