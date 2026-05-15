@@ -256,7 +256,10 @@ class MCPConnectionManager:
             })
 
     async def close(self):
-        await self.stack.aclose()
+        try:
+            await self.stack.aclose()
+        except Exception as e:
+            logger.warning(f"Ignored error during MCP connections cleanup: {e}")
 
     def _parse_excluded_tools(self) -> set:
         if not self.excluded_tools_header:
