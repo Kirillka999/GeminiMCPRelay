@@ -177,7 +177,7 @@ class MCPConnectionManager:
                     "has_read": has_read
                 })
                         
-            except Exception as e:
+            except BaseException as e:
                 logger.error(f"Failed to connect or fetch tools from MCP server '{name}': {e}", exc_info=True)
                 if fetch_raw_tools:
                     continue
