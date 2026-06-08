@@ -116,3 +116,46 @@ def build_synthetic_chunk(response_parts: list[types.Part]) -> dict:
     )
     synthetic_dict = synthetic_chunk.model_dump(exclude_none=True, by_alias=True)
     return convert_bytes_to_b64(synthetic_dict)
+
+def normalize_tool_schema(raw_schema: dict | None) -> dict:
+    """
+    Normalizes a JSON schema provided by an MCP server to ensure compatibility
+    with Google Gemini API requirements. Handles fallback for missing schemas
+    and converts ["type", "null"] arrays into nullable flags.
+
+    This logic is copied from the official Gemini CLI:
+    https://github.com/google-gemini/gemini-cli.git
+    """
+    if not raw_schema:
+        return {"type": "object", "properties": {}}
+
+    def _transform_schema(obj):
+        if not isinstance(obj, dict):
+            if isinstance(obj, list):
+                return [_transform_schema(item) for item in obj]
+            return obj
+        
+        res = dict(obj)
+        
+        # Handle type arrays like ["string", "null"] -> "type": "string", "nullable": True
+        type_val = res.get("type")
+        if isinstance(type_val, list) and len(type_val) == 2:
+            try:
+                null_idx = type_val.index("null")
+                other_val = type_val[1 - null_idx]
+                if isinstance(other_val, str):
+                    res["type"] = other_val
+                    res["nullable"] = True
+            except ValueError:
+                pass # "null" not in list
+                
+        for k, v in res.items():
+            res[k] = _transform_schema(v)
+            
+        return res
+        
+    input_schema = _transform_schema(raw_schema)
+    if "type" not in input_schema:
+        input_schema["type"] = "object"
+        
+    return input_schema

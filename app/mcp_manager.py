@@ -11,6 +11,8 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 
+from app.formatters import normalize_tool_schema
+
 logger = logging.getLogger(__name__)
 
 class MCPServerAdapter:
@@ -208,10 +210,9 @@ class MCPConnectionManager:
                 adapter.register_tool(tool.name, mapped_name)
                 self.adapters_map[mapped_name] = adapter
                 
-                input_schema = tool.inputSchema if hasattr(tool, "inputSchema") else tool.input_schema
-                if "type" not in input_schema:
-                    input_schema["type"] = "object"
-                    
+                raw_schema = getattr(tool, "inputSchema", getattr(tool, "input_schema", None))
+                input_schema = normalize_tool_schema(raw_schema)
+
                 self._append_tool_declarations(
                     mapped_name=mapped_name,
                     description=tool.description or "",
