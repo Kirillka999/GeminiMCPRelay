@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import httpx
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -54,8 +55,7 @@ def _initialize_client_and_config(api_key: str, payload: dict, mcp_declarations:
     )
     return client, contents, config
 
-@router.post("/v1beta/models/{model_name}:generateContent")
-async def generate_content(model_name: str, request: Request):
+async def handle_generate_content(model_name: str, request: Request):
     api_key = request.headers.get("x-goog-api-key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API Key")
@@ -81,9 +81,7 @@ async def generate_content(model_name: str, request: Request):
     finally:
         await manager.close()
 
-
-@router.post("/v1beta/models/{model_name}:streamGenerateContent")
-async def stream_generate_content(model_name: str, request: Request):
+async def handle_stream_generate_content(model_name: str, request: Request):
     api_key = request.headers.get("x-goog-api-key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API Key")
@@ -105,9 +103,63 @@ async def stream_generate_content(model_name: str, request: Request):
             logger.error(f"Error during streaming generation: {e}", exc_info=True)
             error_json = {"error": {"code": 500, "message": str(e), "status": "INTERNAL"}}
             yield f"data: {json.dumps(error_json, ensure_ascii=False)}\n\n"
-
-
         finally:
             await manager.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+async def transparent_proxy(request: Request, full_path: str):
+    target_base = GEMINI_BASE_URL
+    target_url = f"{target_base.rstrip('/')}/{full_path}"
+    
+    query_params = request.url.query
+    if query_params:
+        target_url += f"?{query_params}"
+        
+    headers = {}
+    for k, v in request.headers.items():
+        if k.lower() not in ("host", "content-length"):
+            headers[k] = v
+            
+    body = await request.body()
+    
+    client = httpx.AsyncClient()
+    req = client.build_request(
+        method=request.method,
+        url=target_url,
+        headers=headers,
+        content=body
+    )
+    
+    resp = await client.send(req, stream=True)
+    
+    resp_headers = dict(resp.headers)
+    resp_headers.pop("content-encoding", None)
+    resp_headers.pop("content-length", None)
+    
+    async def response_generator():
+        async for chunk in resp.aiter_bytes():
+            yield chunk
+        await client.aclose()
+        
+    return StreamingResponse(
+        response_generator(),
+        status_code=resp.status_code,
+        headers=resp_headers
+    )
+
+@router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def proxy_gateway(request: Request, full_path: str):
+    """
+    Catch-all router that intercepts generation endpoints and transparently proxies everything else.
+    """
+    if request.method == "POST":
+        if full_path.endswith(":generateContent"):
+            model_name = full_path.split("/")[-1].split(":")[0]
+            return await handle_generate_content(model_name, request)
+            
+        elif full_path.endswith(":streamGenerateContent"):
+            model_name = full_path.split("/")[-1].split(":")[0]
+            return await handle_stream_generate_content(model_name, request)
+            
+    return await transparent_proxy(request, full_path)

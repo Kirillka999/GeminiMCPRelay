@@ -10,7 +10,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Gemini MCP-Hero Proxy")
+app = FastAPI(title="Gemini MCP Relay")
 
 app.add_middleware(
     CORSMiddleware,
