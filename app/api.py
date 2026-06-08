@@ -138,9 +138,11 @@ async def transparent_proxy(request: Request, full_path: str):
     resp_headers.pop("content-length", None)
     
     async def response_generator():
-        async for chunk in resp.aiter_bytes():
-            yield chunk
-        await client.aclose()
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await client.aclose()
         
     return StreamingResponse(
         response_generator(),

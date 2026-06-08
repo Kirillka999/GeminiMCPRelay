@@ -180,6 +180,8 @@ class MCPConnectionManager:
                 
                 self.server_stacks.append(server_stack)
                         
+            except asyncio.CancelledError:
+                raise
             except BaseException as e:
                 logger.error(f"Failed to connect or fetch tools from MCP server '{name}': {e}", exc_info=True)
                 # Cleanup the failed isolated stack
