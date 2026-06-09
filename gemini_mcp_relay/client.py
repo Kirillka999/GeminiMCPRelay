@@ -34,10 +34,17 @@ class AsyncModelsProxy:
     async def _setup_and_run(self, loop_func, model: str, contents, config: types.GenerateContentConfig | None = None, **kwargs):
         manager = self._wrapper.mcp
         
+        # Extract interceptor if provided in method call, fallback to wrapper's global interceptor
+        interceptor = kwargs.pop("interceptor", self._wrapper.interceptor)
+        
         if config is None:
             config = types.GenerateContentConfig()
         elif isinstance(config, dict):
             config = types.GenerateContentConfig(**config)
+            
+        # Always disable Google's built-in Automated Function Calling (AFC)
+        # to ensure our custom orchestrator manages the lifecycle and triggers interceptors.
+        config.automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True)
             
         if manager.mcp_declarations:
             mcp_tool = types.Tool(function_declarations=manager.mcp_declarations)
@@ -52,7 +59,8 @@ class AsyncModelsProxy:
             model_name=model,
             contents=processed_contents,
             config=config,
-            adapters_map=manager.adapters_map
+            adapters_map=manager.adapters_map,
+            interceptor=interceptor
         )
 
     async def generate_content(self, model: str, contents, config: types.GenerateContentConfig | None = None, **kwargs) -> types.GenerateContentResponse:
@@ -61,10 +69,16 @@ class AsyncModelsProxy:
     async def generate_content_stream(self, model: str, contents, config: types.GenerateContentConfig | None = None, **kwargs):
         manager = self._wrapper.mcp
         
+        interceptor = kwargs.pop("interceptor", self._wrapper.interceptor)
+        
         if config is None:
             config = types.GenerateContentConfig()
         elif isinstance(config, dict):
             config = types.GenerateContentConfig(**config)
+            
+        # Always disable Google's built-in Automated Function Calling (AFC)
+        # to ensure our custom orchestrator fully manages the lifecycle and triggers interceptors.
+        config.automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True)
             
         if manager.mcp_declarations:
             mcp_tool = types.Tool(function_declarations=manager.mcp_declarations)
@@ -79,7 +93,8 @@ class AsyncModelsProxy:
             model_name=model,
             contents=processed_contents,
             config=config,
-            adapters_map=manager.adapters_map
+            adapters_map=manager.adapters_map,
+            interceptor=interceptor
         ):
             yield chunk
 
@@ -93,9 +108,10 @@ class MCPClientWrapper:
     A wrapper around google.genai.Client that intercepts generation requests,
     fetches tools from configured MCP servers, and autonomously executes the function calling loop locally.
     """
-    def __init__(self, base_client: genai.Client, mcp_servers: dict = None, excluded_tools: list = None):
+    def __init__(self, base_client: genai.Client, mcp_servers: dict = None, excluded_tools: list = None, interceptor = None):
         self.base_client = base_client
         self._initial_mcp_servers = mcp_servers or {}
+        self.interceptor = interceptor
         
         self.mcp = MCPConnectionManager(excluded_tools=excluded_tools)
         self.aio = AioNamespace(self)

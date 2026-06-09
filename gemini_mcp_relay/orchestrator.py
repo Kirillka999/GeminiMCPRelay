@@ -9,13 +9,77 @@ from google.genai._extra_utils import (
 
 logger = logging.getLogger(__name__)
 
+async def execute_single_tool(
+    fc: types.FunctionCall,
+    adapters_map: dict,
+    local_tools: dict,
+    interceptor = None
+) -> types.Part:
+    """
+    Executes a single tool (MCP or local) with interceptor hooks, and returns a types.Part.
+    """
+    real_call_skipped = False
+    response_dict = None
+
+    if interceptor:
+        try:
+            intercept_result = await interceptor.before_tool_call(fc)
+            if isinstance(intercept_result, dict):
+                response_dict = intercept_result
+                real_call_skipped = True
+            elif isinstance(intercept_result, types.FunctionCall):
+                fc = intercept_result
+        except Exception as e:
+            logger.error(f"Error in interceptor before_tool_call for '{fc.name}': {e}", exc_info=True)
+            response_dict = {"error": f"Interceptor error: {str(e)}"}
+            real_call_skipped = True
+
+    if not real_call_skipped:
+        adapter = adapters_map.get(fc.name)
+        if adapter:
+            _, response_dict = await adapter.call_tool_raw(fc)
+        elif fc.name in local_tools:
+            func = local_tools[fc.name]
+            args = convert_number_values_for_function_call_args(fc.args) if fc.args else {}
+            try:
+                args = convert_argument_from_function(args, func)
+                
+                if inspect.iscoroutinefunction(func):
+                    res = await func(**args)
+                else:
+                    res = await asyncio.to_thread(func, **args)
+                
+                response_dict = res if isinstance(res, dict) else {"result": res}
+            except Exception as e:
+                logger.error(f"Error calling local tool '{fc.name}': {e}", exc_info=True)
+                response_dict = {"error": str(e)}
+        else:
+            logger.warning(f"Tool '{fc.name}' not found in provided MCP adapters or local tools.")
+            response_dict = {"error": "Tool not found"}
+
+    if interceptor:
+        try:
+            response_dict = await interceptor.after_tool_call(fc, response_dict)
+        except Exception as e:
+            logger.error(f"Error in interceptor after_tool_call for '{fc.name}': {e}", exc_info=True)
+            response_dict = {"error": f"Interceptor post-processing error: {str(e)}"}
+
+    part = types.Part.from_function_response(
+        name=fc.name,
+        response=response_dict
+    )
+    part.function_response.id = fc.id
+    return part
+
+
 async def generate_content_loop(
     client, 
     model_name: str, 
     contents, 
     config: types.GenerateContentConfig, 
     adapters_map: dict,
-    fix_gemini_empty_response: bool = True
+    fix_gemini_empty_response: bool = True,
+    interceptor = None
 ) -> types.GenerateContentResponse:
     """
     Executes the sync function calling loop.
@@ -83,43 +147,12 @@ async def generate_content_loop(
             
         response_parts = []
         for fc in response.function_calls:
-            adapter = adapters_map.get(fc.name)
-            if adapter:
-                parts = await adapter.process_function_calls_as_parts([fc])
-                response_parts.extend(parts)
-            elif fc.name in local_tools:
-                func = local_tools[fc.name]
-                args = convert_number_values_for_function_call_args(fc.args) if fc.args else {}
-                try:
-                    args = convert_argument_from_function(args, func)
-                    
-                    if inspect.iscoroutinefunction(func):
-                        res = await func(**args)
-                    else:
-                        res = await asyncio.to_thread(func, **args)
-                    
-                    response_dict = res if isinstance(res, dict) else {"result": res}
-                except Exception as e:
-                    logger.error(f"Error calling local tool '{fc.name}': {e}", exc_info=True)
-                    response_dict = {"error": str(e)}
-                
-                part = types.Part.from_function_response(
-                    name=fc.name,
-                    response=response_dict
-                )
-                part.function_response.id = fc.id
-                response_parts.append(part)
-            else:
-                logger.warning(f"Tool '{fc.name}' not found in provided MCP adapters or local tools.")
-                fallback_part = types.Part.from_function_response(
-                    name=fc.name, 
-                    response={"error": "Tool not found"}
-                )
-                fallback_part.function_response.id = fc.id
-                response_parts.append(fallback_part)
+            part = await execute_single_tool(fc, adapters_map, local_tools, interceptor)
+            response_parts.append(part)
                 
         current_contents.append(types.Content(role="user", parts=response_parts))
         accumulated_parts.extend(response_parts)
+
 
 async def stream_generate_content_loop(
     client, 
@@ -127,7 +160,8 @@ async def stream_generate_content_loop(
     contents, 
     config: types.GenerateContentConfig, 
     adapters_map: dict,
-    fix_gemini_empty_response: bool = True
+    fix_gemini_empty_response: bool = True,
+    interceptor = None
 ):
     """
     Executes the streaming function calling loop.
@@ -192,39 +226,8 @@ async def stream_generate_content_loop(
         
         response_parts = []
         for fc in function_calls_to_process:
-            adapter = adapters_map.get(fc.name)
-            if adapter:
-                parts = await adapter.process_function_calls_as_parts([fc])
-                response_parts.extend(parts)
-            elif fc.name in local_tools:
-                func = local_tools[fc.name]
-                args = convert_number_values_for_function_call_args(fc.args) if fc.args else {}
-                try:
-                    args = convert_argument_from_function(args, func)
-                    
-                    if inspect.iscoroutinefunction(func):
-                        res = await func(**args)
-                    else:
-                        res = await asyncio.to_thread(func, **args)
-                    
-                    response_dict = res if isinstance(res, dict) else {"result": res}
-                except Exception as e:
-                    logger.error(f"Error calling local tool '{fc.name}': {e}", exc_info=True)
-                    response_dict = {"error": str(e)}
-                
-                part = types.Part.from_function_response(
-                    name=fc.name,
-                    response=response_dict
-                )
-                part.function_response.id = fc.id
-                response_parts.append(part)
-            else:
-                fallback_part = types.Part.from_function_response(
-                    name=fc.name, 
-                    response={"error": "Tool not found"}
-                )
-                fallback_part.function_response.id = fc.id
-                response_parts.append(fallback_part)
+            part = await execute_single_tool(fc, adapters_map, local_tools, interceptor)
+            response_parts.append(part)
         
         current_contents.append(types.Content(role="user", parts=response_parts))
         

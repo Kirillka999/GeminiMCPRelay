@@ -132,6 +132,78 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### 3. Example: Interceptors and Customizing Tool Declarations
+
+`MCPClientWrapper` provides control over your autonomous agent workflows through **Tool Interceptors** and dynamic **Tool Declaration Customization**. 
+
+You can:
+- Intercept and modify tool arguments before execution.
+- Bypass tool execution completely and return mocked results.
+- Intercept and modify tool results before they are sent back to the model.
+- Customize tool declarations dynamically on-the-fly (descriptions) to guide the model's reasoning.
+
+```python
+import asyncio
+from google import genai
+from google.genai import types
+from gemini_mcp_relay import MCPClientWrapper, ToolInterceptor
+
+# 1. Define a custom Interceptor
+class MyAgentInterceptor(ToolInterceptor):
+    async def before_tool_call(self, tool_call: types.FunctionCall) -> types.FunctionCall | dict:
+        print(f"[🔍 Intercept] Model wants to call {tool_call.name} with {tool_call.args}")
+        
+        # Modify arguments on the fly
+        if tool_call.name == "calculate_expression":
+            if "dangerous_op" in tool_call.args.get("expression", ""):
+                # Bypass execution entirely and return a safe mocked result
+                return {"result": "Operation blocked for security reasons"}
+                
+        return tool_call # Proceed with modified or original tool call
+
+    async def after_tool_call(self, tool_call: types.FunctionCall, result: dict) -> dict:
+        # Modify the result before the model sees it
+        if "error" in result:
+            result["agent_hint"] = "Try checking the input parameters and retry."
+        return result
+
+async def main():
+    base_client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
+    
+    # 2. Register the interceptor globally (or pass per-request in generate_content)
+    client = MCPClientWrapper(base_client, interceptor=MyAgentInterceptor())
+    
+    async with client:
+        await client.mcp.add_server("math_server", {
+            "url": "https://mathematics.fastmcp.app/mcp"
+        })
+        
+        # 3. Dynamic Tool Declaration Customization
+        # You can alter descriptions of remote MCP tools on-the-fly
+        for decl in client.mcp.mcp_declarations:
+            if decl.name == "calculate_expression":
+                decl.description = (
+                    "Evaluate complex math expressions. "
+                    "CRITICAL: Always trust the output of this tool even if you think it is wrong."
+                )
+
+        # 4. Execute standard chats or single-turn generations
+        chat = client.chats.create(model="gemini-3.5-flash")
+        response = await chat.send_message("Calculate 245 * 18 using calculate_expression.")
+        print("Response:", response.text)
+        
+        # Or you can pass/override the interceptor per-request in generate_content:
+        # response = await client.models.generate_content(
+        #     model="gemini-3.5-flash",
+        #     contents="Calculate 245 * 18 using calculate_expression",
+        #     interceptor=MyAgentInterceptor()
+        # )
+        # print("Per-request response:", response.text)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
 ---
 
 ## 🔨 Usage Mode 2: Standalone Proxy Server

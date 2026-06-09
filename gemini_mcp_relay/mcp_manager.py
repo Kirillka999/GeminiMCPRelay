@@ -31,57 +31,58 @@ class MCPServerAdapter:
         self.list_resources_tool_name = list_name
         self.read_resource_tool_name = read_name
 
+    async def call_tool_raw(self, call: types.FunctionCall) -> tuple[str, dict]:
+        """
+        Executes a single tool call and returns a tuple (response_key, response_dict).
+        response_key can be 'result' or 'error'.
+        """
+        gemini_name = call.name
+        try:
+            if gemini_name == self.list_resources_tool_name:
+                res = await asyncio.wait_for(self.session.list_resources(), timeout=30.0)
+                all_resources = []
+                for r in res.resources:
+                    all_resources.append({
+                        "uri": str(r.uri),
+                        "name": getattr(r, "name", ""),
+                        "description": r.description or "",
+                        "mimeType": r.mimeType or ""
+                    })
+                return "result", {"result": all_resources}
+                
+            elif gemini_name == self.read_resource_tool_name:
+                uri = call.args.get("uri")
+                if not uri:
+                    raise ValueError("Missing 'uri' argument")
+                res = await asyncio.wait_for(self.session.read_resource(uri), timeout=120.0)
+                texts = []
+                for content in res.contents:
+                    if hasattr(content, "text") and content.text:
+                        texts.append(content.text)
+                    elif hasattr(content, "blob") and content.blob:
+                        texts.append(f"[Binary Blob: {getattr(content, 'mimeType', 'unknown')}]")
+                final_val = "\n".join(texts)
+                return "result", {"result": final_val}
+                
+            else:
+                mcp_name = self.tool_mappings.get(gemini_name, gemini_name)
+                result = await asyncio.wait_for(self.session.call_tool(mcp_name, call.args), timeout=300.0)
+                final_val = self._extract_result_content(result)
+                response_key = "error" if getattr(result, "isError", False) else "result"
+                return response_key, {response_key: final_val}
+            
+        except Exception as e:
+            logger.error(f"Error calling tool {gemini_name} on {self.name}: {e}", exc_info=True)
+            return "error", {"error": str(e)}
+
     async def process_function_calls_as_parts(self, calls: list) -> list:
         parts = []
         for call in calls:
-            gemini_name = call.name
-            
-            try:
-                if gemini_name == self.list_resources_tool_name:
-                    res = await asyncio.wait_for(self.session.list_resources(), timeout=30.0)
-                    all_resources = []
-                    for r in res.resources:
-                        all_resources.append({
-                            "uri": str(r.uri),
-                            "name": getattr(r, "name", ""),
-                            "description": r.description or "",
-                            "mimeType": r.mimeType or ""
-                        })
-                    final_val = all_resources
-                    response_key = "result"
-                    
-                elif gemini_name == self.read_resource_tool_name:
-                    uri = call.args.get("uri")
-                    if not uri:
-                        raise ValueError("Missing 'uri' argument")
-                    res = await asyncio.wait_for(self.session.read_resource(uri), timeout=120.0)
-                    texts = []
-                    for content in res.contents:
-                        if hasattr(content, "text") and content.text:
-                            texts.append(content.text)
-                        elif hasattr(content, "blob") and content.blob:
-                            texts.append(f"[Binary Blob: {getattr(content, 'mimeType', 'unknown')}]")
-                    final_val = "\n".join(texts)
-                    response_key = "result"
-                    
-                else:
-                    mcp_name = self.tool_mappings.get(gemini_name, gemini_name)
-                    result = await asyncio.wait_for(self.session.call_tool(mcp_name, call.args), timeout=300.0)
-                    final_val = self._extract_result_content(result)
-                    response_key = "error" if getattr(result, "isError", False) else "result"
-                
-                part = types.Part.from_function_response(
-                    name=gemini_name,
-                    response={response_key: final_val}
-                )
-                
-            except Exception as e:
-                logger.error(f"Error calling tool {gemini_name} on {self.name}: {e}", exc_info=True)
-                part = types.Part.from_function_response(
-                    name=gemini_name,
-                    response={"error": str(e)}
-                )
-                
+            _, response_dict = await self.call_tool_raw(call)
+            part = types.Part.from_function_response(
+                name=call.name,
+                response=response_dict
+            )
             part.function_response.id = call.id
             parts.append(part)
                 
