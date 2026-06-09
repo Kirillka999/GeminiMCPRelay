@@ -8,13 +8,13 @@ It intercepts requests to Google's API, fetches tools from your remote MCP serve
 
 Install via pip. You can choose to install just the core library (for local SDK wrapping) or include the proxy server dependencies.
 
+Install for local Python SDK usage
 ```bash
-# 1. Install for local Python SDK usage
 pip install gemini-mcp-relay
 ```
 
+Install with proxy server capabilities
 ```bash
-# Install with proxy server capabilities
 pip install "gemini-mcp-relay[server]"
 ```
 
@@ -38,6 +38,8 @@ async def main():
     base_client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
     
     # 2. Wrap it with our MCP Client
+    # Optional: you can also pass pre-configured servers here
+    # client = MCPClientWrapper(base_client, mcp_servers={"math": {"url": "..."}})
     client = MCPClientWrapper(base_client)
     
     # 3. Open the connection pool context
@@ -133,19 +135,42 @@ print(response.text)
 
 ---
 
-## Additional Features
+## Tool Name Conflicts & Disabling
+If multiple connected MCP servers provide a tool with the exact same name, `gemini-mcp-relay` automatically prefixes the tool name with the server's name to prevent conflicts (e.g., two servers with a `calculate` tool will yield `server1_calculate` and `server2_calculate`).
 
-### Disabling Specific Tools
-You can manually prevent specific tools from being passed to the model.
+### Disabling Tools
+You can manually prevent specific tools from being passed to the model. Thanks to the conflict resolution logic, you have granular control:
+- **Global Exclusion**: Use the original tool name (e.g., `"calculate"`) to disable it across *all* connected servers.
+- **Server-Specific Exclusion**: Use the prefixed name (e.g., `"server1_calculate"`) to disable it *only* for that specific server.
 
-**Locally:** Pass `excluded_tools` to the wrapper.
+When using the wrapper locally, with `excluded_tools` you can dynamically add or remove excluded tools at any time, and the internal state will update for the next model generation.
+
 ```python
-client = MCPClientWrapper(base_client, excluded_tools=["unsafe_delete_tool"])
+# 1. Initialize with a pre-configured exclusion list
+client = MCPClientWrapper(base_client, excluded_tools=["unsafe_tool", "server1_calculate"])
+
+# 2. Add an exclusion dynamically
+client.mcp.excluded_tools.add("dangerous_action")
+
+# 3. Remove an exclusion dynamically (allow the tool again)
+client.mcp.excluded_tools.remove("unsafe_tool")
+
+# 4. Clear all exclusions (allow all tools)
+client.mcp.excluded_tools.clear()
+
+# 5. Add multiple exclusions at once
+client.mcp.excluded_tools.update(["t1", "t2"])
 ```
 
-**Via Server:** Pass a Base64-encoded array to the `X-MCP-Excluded-Tools` header.
+#### Via Standalone Server
+When connecting to the relay via HTTP, pass a Base64-encoded JSON array of excluded tool names to the `X-MCP-Excluded-Tools` header on each request.
 
-### Tracing Tool Execution
+## MCP Servers Resources Support
+If a connected MCP server supports resources, `gemini-mcp-relay` automatically injects two additional tools into the model:
+- `list_resources` — allows the model to view available server resources.
+- `read_resource` — allows the model to read the content of a specific resource via its URI.
+
+## Tracing Tool Execution
 Whether you are using the **Local SDK Wrapper** or connecting via the **Standalone Proxy Server**, the tool execution lifecycle remains completely transparent. Because the library executes tools autonomously on your behalf, it automatically injects the intermediate `function_call` and `function_response` steps directly into the final response (or SSE stream chunks). 
 
 This allows your application to perfectly trace and log exactly which MCP tools were used behind the scenes.
@@ -160,9 +185,25 @@ for part in response.candidates[0].content.parts:
         print(part.text)
 ```
 
-### Retrieving Available Tools (Server Mode Only)
-If you need to retrieve a list of all available tools and their JSON schemas from the configured MCP servers via HTTP, use the `GET /v1/mcp/tools` endpoint. 
+## Retrieving Available Tools
+You can retrieve a list of all active tools (and their JSON schemas) that are currently available to the model.
 
+**Locally:**
+Use the `get_tools` method. You can optionally pass a server name to filter the results.
+```python
+# Get all tools across all servers
+all_tools = client.mcp.get_tools()
+
+# Get tools from a specific server
+math_tools = client.mcp.get_tools("math_server")
+
+for tool in math_tools:
+    print(f"Tool: {tool['name']}")
+    print(f"Schema: {tool['parameters']}")
+```
+
+**Via Server:**
+If you are using the standalone proxy, use the `GET /v1/mcp/tools` HTTP endpoint. 
 ```bash
 curl http://127.0.0.1:8000/v1/mcp/tools \
   -H "X-MCP-Servers: <BASE64_ENCODED_CONFIG>"

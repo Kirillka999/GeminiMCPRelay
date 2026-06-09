@@ -103,20 +103,77 @@ class MCPServerAdapter:
         except json.JSONDecodeError:
             return combined_text
 
+class ReactiveSet(set):
+    def __init__(self, iterable=None, on_change=None):
+        super().__init__(iterable or [])
+        self.on_change = on_change
+
+    def _notify(self):
+        if self.on_change:
+            self.on_change()
+
+    def add(self, element):
+        if element not in self:
+            super().add(element)
+            self._notify()
+
+    def remove(self, element):
+        super().remove(element)
+        self._notify()
+
+    def discard(self, element):
+        if element in self:
+            super().discard(element)
+            self._notify()
+
+    def pop(self):
+        item = super().pop()
+        self._notify()
+        return item
+
+    def clear(self):
+        if len(self) > 0:
+            super().clear()
+            self._notify()
+
+    def update(self, *others):
+        initial_len = len(self)
+        super().update(*others)
+        if len(self) != initial_len:
+            self._notify()
+
+    def intersection_update(self, *others):
+        super().intersection_update(*others)
+        self._notify()
+
+    def difference_update(self, *others):
+        super().difference_update(*others)
+        self._notify()
+
+    def symmetric_difference_update(self, *others):
+        super().symmetric_difference_update(*others)
+        self._notify()
+
 
 class ServerState:
     def __init__(self, stack: AsyncExitStack, session: ClientSession, adapter: MCPServerAdapter):
         self.stack = stack
         self.session = session
         self.adapter = adapter
+        self.cached_tools = []
+        self.has_list = False
+        self.has_read = False
 
 class MCPConnectionManager:
     def __init__(self, excluded_tools: list = None):
-        self.excluded_tools = set(excluded_tools) if excluded_tools else set()
+        self.excluded_tools = ReactiveSet(excluded_tools, on_change=self._on_excluded_tools_changed)
         self.servers = {}  # name -> ServerState
         self.adapters_map = {}
         self.mcp_declarations = []
         self.raw_tools = []
+        
+    def _on_excluded_tools_changed(self):
+        self._rebuild_state()
 
     @classmethod
     def from_http_headers(cls, mcp_header: str, excluded_tools_header: str = None):
@@ -141,13 +198,13 @@ class MCPConnectionManager:
         instance = cls(excluded_tools=excluded_tools)
         return instance, server_config
 
-    async def connect_all_from_config(self, config_dict: dict, fetch_raw_tools=False):
+    async def connect_all_from_config(self, config_dict: dict, ignore_connection_errors: bool = False):
         """Helper for the FastAPI server to connect multiple servers at once."""
         for name, config in config_dict.items():
-            await self.add_server(name, config, fetch_raw_tools, skip_rebuild=True)
-        await self._rebuild_state(fetch_raw_tools)
+            await self.add_server(name, config, skip_rebuild=True, raise_on_error=not ignore_connection_errors)
+        self._rebuild_state()
 
-    async def add_server(self, name: str, config: dict, fetch_raw_tools=False, skip_rebuild=False):
+    async def add_server(self, name: str, config: dict, skip_rebuild=False, raise_on_error: bool = True):
         if name in self.servers:
             logger.warning(f"Server '{name}' is already connected.")
             return
@@ -171,10 +228,20 @@ class MCPConnectionManager:
                 raise RuntimeError(f"Connection failed: {e}")
 
             adapter = MCPServerAdapter(name, session)
-            self.servers[name] = ServerState(server_stack, session, adapter)
+            state = ServerState(server_stack, session, adapter)
+            self.servers[name] = state
+            
+            # Fetch tools and capabilities once and cache them
+            tools_response = await asyncio.wait_for(session.list_tools(), timeout=20.0)
+            state.cached_tools = tools_response.tools
+            
+            capabilities = session.get_server_capabilities()
+            has_resources = bool(capabilities and getattr(capabilities, "resources", None))
+            state.has_list = has_resources
+            state.has_read = has_resources
             
             if not skip_rebuild:
-                await self._rebuild_state(fetch_raw_tools)
+                self._rebuild_state()
                     
         except asyncio.CancelledError:
             try:
@@ -189,7 +256,7 @@ class MCPConnectionManager:
             except BaseException:
                 pass
                 
-            if not fetch_raw_tools:
+            if raise_on_error:
                 raise HTTPException(status_code=502, detail=f"Failed to connect to MCP server '{name}': {str(e)}")
 
     async def remove_server(self, name: str):
@@ -202,17 +269,27 @@ class MCPConnectionManager:
         except BaseException as e:
             logger.warning(f"Ignored error closing stack for '{name}': {e}")
             
-        await self._rebuild_state(fetch_raw_tools=False)
+        self._rebuild_state()
 
-    async def _rebuild_state(self, fetch_raw_tools: bool):
+    def get_tools(self, server_name: str = None) -> list[dict]:
+        """
+        Returns a list of active tools, optionally filtered by a specific server.
+        The tools are returned as dictionaries containing 'serverName', 'name', 
+        'description', and 'parameters' (JSON schema).
+        """
+        if not server_name:
+            return self.raw_tools
+        return [t for t in self.raw_tools if t["serverName"] == server_name]
+
+    def _rebuild_state(self):
         self.adapters_map.clear()
         self.mcp_declarations.clear()
         self.raw_tools.clear()
         
-        server_data, tool_name_counts = await self._gather_servers_data(self.excluded_tools, fetch_raw_tools)
-        self._register_gathered_tools(server_data, tool_name_counts, self.excluded_tools, fetch_raw_tools)
+        server_data, tool_name_counts = self._gather_servers_data(self.excluded_tools)
+        self._register_gathered_tools(server_data, tool_name_counts, self.excluded_tools)
 
-    async def _gather_servers_data(self, excluded_tools: set, fetch_raw_tools: bool) -> tuple[list, dict]:
+    def _gather_servers_data(self, excluded_tools: set) -> tuple[list, dict]:
         server_data = []
         tool_name_counts = {}
 
@@ -221,18 +298,14 @@ class MCPConnectionManager:
             safe_server_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name).lower()
             
             try:
-                tools_response = await asyncio.wait_for(state.session.list_tools(), timeout=20.0)
                 valid_tools = []
-                for t in tools_response.tools:
+                for t in state.cached_tools:
                     if t.name in excluded_tools or f"{safe_server_name}_{t.name}" in excluded_tools:
                         continue
                     valid_tools.append(t)
                 
-                capabilities = state.session.get_server_capabilities()
-                has_resources = bool(capabilities and getattr(capabilities, "resources", None))
-                
-                has_list = has_resources and "list_resources" not in excluded_tools and f"{safe_server_name}_list_resources" not in excluded_tools
-                has_read = has_resources and "read_resource" not in excluded_tools and f"{safe_server_name}_read_resource" not in excluded_tools
+                has_list = state.has_list and "list_resources" not in excluded_tools and f"{safe_server_name}_list_resources" not in excluded_tools
+                has_read = state.has_read and "read_resource" not in excluded_tools and f"{safe_server_name}_read_resource" not in excluded_tools
 
                 for t in valid_tools:
                     tool_name_counts[t.name] = tool_name_counts.get(t.name, 0) + 1
@@ -255,7 +328,7 @@ class MCPConnectionManager:
             
         return server_data, tool_name_counts
 
-    def _register_gathered_tools(self, server_data: list, tool_name_counts: dict, excluded_tools: set, fetch_raw_tools: bool):
+    def _register_gathered_tools(self, server_data: list, tool_name_counts: dict, excluded_tools: set):
         for data in server_data:
             server_name = data["name"]
             safe_name = data["safe_name"]
@@ -274,8 +347,7 @@ class MCPConnectionManager:
                     mapped_name=mapped_name,
                     description=tool.description or "",
                     schema=input_schema,
-                    server_name=server_name,
-                    fetch_raw_tools=fetch_raw_tools
+                    server_name=server_name
                 )
 
             list_name = f"{safe_name}_list_resources" if tool_name_counts.get("list_resources", 0) > 1 else "list_resources"
@@ -290,8 +362,7 @@ class MCPConnectionManager:
                     mapped_name=list_name,
                     description=f"List available resources from the {server_name} server.",
                     schema={"type": "object", "properties": {}},
-                    server_name=server_name,
-                    fetch_raw_tools=fetch_raw_tools
+                    server_name=server_name
                 )
 
             if data.get("has_read"):
@@ -304,11 +375,10 @@ class MCPConnectionManager:
                         "properties": {"uri": {"type": "string", "description": "The URI of the resource to read"}},
                         "required": ["uri"]
                     },
-                    server_name=server_name,
-                    fetch_raw_tools=fetch_raw_tools
+                    server_name=server_name
                 )
 
-    def _append_tool_declarations(self, mapped_name: str, description: str, schema: dict, server_name: str, fetch_raw_tools: bool):
+    def _append_tool_declarations(self, mapped_name: str, description: str, schema: dict, server_name: str):
         decl = types.FunctionDeclaration(
             name=mapped_name,
             description=description,
@@ -316,13 +386,12 @@ class MCPConnectionManager:
         )
         self.mcp_declarations.append(decl)
         
-        if fetch_raw_tools:
-            self.raw_tools.append({
-                "serverName": server_name,
-                "name": mapped_name,
-                "description": description,
-                "parameters": schema
-            })
+        self.raw_tools.append({
+            "serverName": server_name,
+            "name": mapped_name,
+            "description": description,
+            "parameters": schema
+        })
 
     async def close(self):
         for state in self.servers.values():

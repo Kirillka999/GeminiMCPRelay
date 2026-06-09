@@ -31,7 +31,7 @@ async def list_mcp_tools(request: Request):
     try:
         manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header)
         try:
-            await manager.connect_all_from_config(parsed_config, fetch_raw_tools=True)
+            await manager.connect_all_from_config(parsed_config, ignore_connection_errors=True)
             return {"tools": manager.raw_tools}
         finally:
             await manager.close()

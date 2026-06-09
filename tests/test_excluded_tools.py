@@ -1,9 +1,10 @@
 """
 Tests the 'excluded_tools' functionality.
 
-This test verifies two layers of security:
+This test verifies two layers of security and dynamic updates:
 1. The wrapper must remove the excluded tool from its internal `mcp_declarations` list.
-2. The model must not execute the excluded tool, even when prompted to do so.
+2. The ReactiveSet must dynamically and synchronously update declarations when manipulated.
+3. The model must not execute the excluded tool, even when prompted to do so.
 """
 import os
 import pytest
@@ -34,6 +35,16 @@ async def test_excluded_tools():
         available_tools = [decl.name for decl in client.mcp.mcp_declarations]
         assert "calculate_expression" not in available_tools, f"The tool 'calculate_expression' is present in declarations despite being excluded! Available: {available_tools}"
         
+        # DYNAMIC VERIFICATION: Remove the exclusion dynamically
+        client.mcp.excluded_tools.remove("calculate_expression")
+        available_tools = [decl.name for decl in client.mcp.mcp_declarations]
+        assert "calculate_expression" in available_tools, "The tool did not reappear after dynamic removal from excluded_tools!"
+
+        # DYNAMIC VERIFICATION: Add the exclusion dynamically
+        client.mcp.excluded_tools.add("calculate_expression")
+        available_tools = [decl.name for decl in client.mcp.mcp_declarations]
+        assert "calculate_expression" not in available_tools, "The tool did not disappear after dynamic addition to excluded_tools!"
+
         # STEP 2: Make a real request to ensure the model cannot call it
         response = await client.models.generate_content(
             model="gemini-3.5-flash",
