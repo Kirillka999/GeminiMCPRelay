@@ -22,6 +22,15 @@ app.add_middleware(
 
 app.include_router(router)
 
+def start():
+    import argparse
+    parser = argparse.ArgumentParser(description="Start the Gemini MCP Relay proxy server.")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to.")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind to.")
+    args = parser.parse_args()
+
+    logger.info(f"👾 Starting Gemini MCP Relay on {args.host}:{args.port}...")
+    uvicorn.run("gemini_mcp_relay.server.main:app", host=args.host, port=args.port)
+
 if __name__ == "__main__":
-    logger.info("🚀 Starting Gemini MCP Relay on port 8000...")
-    uvicorn.run("gemini_mcp_relay.server.main:app", host="0.0.0.0", port=8000, reload=True)
+    start()

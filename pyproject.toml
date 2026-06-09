@@ -21,5 +21,8 @@ server = [
     "sse-starlette>=3.3.4",
 ]
 
+[project.scripts]
+gemini-mcp-relay = "gemini_mcp_relay.server.main:start"
+
 [tool.setuptools.packages.find]
 include = ["gemini_mcp_relay", "gemini_mcp_relay.*"]
