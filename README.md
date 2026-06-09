@@ -26,7 +26,7 @@ If you are writing a Python application, you don't need to run a separate server
 
 The wrapper features a stateful connection pool, meaning it maintains persistent connections to your MCP servers via an `async with` block.
 
-### Example: Using MCP servers locally
+### 1. Example: Using MCP servers
 
 ```python
 import asyncio
@@ -74,6 +74,58 @@ async def main():
         })
         
         response = await chat.send_message("Now search the web for the latest news.")
+        print("Response:", response.text)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### 2. Example: Using MCP servers with local Python tools
+
+`MCPClientWrapper` fully supports combining remote MCP servers with your own local Python functions. The orchestrator automatically routes the calls to the correct handler, including full support for sync/async functions and Pydantic-model inputs.
+
+```python
+import asyncio
+from google import genai
+from google.genai import types
+from gemini_mcp_relay import MCPClientWrapper
+
+# 1. Define a standard local Python tool
+def get_user_balance(user_id: str) -> dict:
+    """
+    Retrieve the current account balance for a user.
+    
+    Args:
+        user_id: The unique identifier of the user.
+    """
+    # Simply return a mock value
+    return {"user_id": user_id, "balance_usd": 1250.50}
+
+async def main():
+    base_client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
+    client = MCPClientWrapper(base_client)
+    
+    async with client:
+        # Connect to a remote MCP server for math calculations
+        await client.mcp.add_server("math_server", {
+            "url": "https://mathematics.fastmcp.app/mcp"
+        })
+        
+        # Request both the MCP math tool and your local Python function
+        prompt = (
+            "First, use the `get_user_balance` tool to look up balance for user 'usr_456'. "
+            "Then, use the `calculate_expression` tool to double that balance."
+        )
+        
+        response = await client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                # Register your local Python functions here as standard callables
+                tools=[get_user_balance]
+            )
+        )
+        
         print("Response:", response.text)
 
 if __name__ == "__main__":

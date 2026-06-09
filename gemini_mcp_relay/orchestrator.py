@@ -1,5 +1,11 @@
+import asyncio
+import inspect
 import logging
 from google.genai import types
+from google.genai._extra_utils import (
+    convert_argument_from_function,
+    convert_number_values_for_function_call_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +26,12 @@ async def generate_content_loop(
     else:
         current_contents = list(contents)
         
+    local_tools = {}
+    if config and getattr(config, "tools", None):
+        for tool in config.tools:
+            if callable(tool):
+                local_tools[tool.__name__] = tool
+
     accumulated_parts = []
     retry_count = 0
     max_retries = 5
@@ -75,8 +87,30 @@ async def generate_content_loop(
             if adapter:
                 parts = await adapter.process_function_calls_as_parts([fc])
                 response_parts.extend(parts)
+            elif fc.name in local_tools:
+                func = local_tools[fc.name]
+                args = convert_number_values_for_function_call_args(fc.args) if fc.args else {}
+                try:
+                    args = convert_argument_from_function(args, func)
+                    
+                    if inspect.iscoroutinefunction(func):
+                        res = await func(**args)
+                    else:
+                        res = await asyncio.to_thread(func, **args)
+                    
+                    response_dict = res if isinstance(res, dict) else {"result": res}
+                except Exception as e:
+                    logger.error(f"Error calling local tool '{fc.name}': {e}", exc_info=True)
+                    response_dict = {"error": str(e)}
+                
+                part = types.Part.from_function_response(
+                    name=fc.name,
+                    response=response_dict
+                )
+                part.function_response.id = fc.id
+                response_parts.append(part)
             else:
-                logger.warning(f"Tool '{fc.name}' not found in provided MCP adapters.")
+                logger.warning(f"Tool '{fc.name}' not found in provided MCP adapters or local tools.")
                 fallback_part = types.Part.from_function_response(
                     name=fc.name, 
                     response={"error": "Tool not found"}
@@ -104,6 +138,12 @@ async def stream_generate_content_loop(
     else:
         current_contents = list(contents)
     
+    local_tools = {}
+    if config and getattr(config, "tools", None):
+        for tool in config.tools:
+            if callable(tool):
+                local_tools[tool.__name__] = tool
+
     retry_count = 0
     max_retries = 5
     
@@ -156,6 +196,28 @@ async def stream_generate_content_loop(
             if adapter:
                 parts = await adapter.process_function_calls_as_parts([fc])
                 response_parts.extend(parts)
+            elif fc.name in local_tools:
+                func = local_tools[fc.name]
+                args = convert_number_values_for_function_call_args(fc.args) if fc.args else {}
+                try:
+                    args = convert_argument_from_function(args, func)
+                    
+                    if inspect.iscoroutinefunction(func):
+                        res = await func(**args)
+                    else:
+                        res = await asyncio.to_thread(func, **args)
+                    
+                    response_dict = res if isinstance(res, dict) else {"result": res}
+                except Exception as e:
+                    logger.error(f"Error calling local tool '{fc.name}': {e}", exc_info=True)
+                    response_dict = {"error": str(e)}
+                
+                part = types.Part.from_function_response(
+                    name=fc.name,
+                    response=response_dict
+                )
+                part.function_response.id = fc.id
+                response_parts.append(part)
             else:
                 fallback_part = types.Part.from_function_response(
                     name=fc.name, 
