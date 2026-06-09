@@ -144,6 +144,7 @@ async def transparent_proxy(request: Request, full_path: str):
     body = await request.body()
     
     client = get_proxy_client()
+    resp = None
     try:
         req = client.build_request(
             method=request.method,
@@ -152,23 +153,30 @@ async def transparent_proxy(request: Request, full_path: str):
             content=body
         )
         resp = await client.send(req, stream=True)
-    except Exception as e:
-        logger.error(f"Failed to send proxy request: {e}", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Bad Gateway: {str(e)}")
-    
-    resp_headers = dict(resp.headers)
-    resp_headers.pop("content-encoding", None)
-    resp_headers.pop("content-length", None)
-    
-    async def response_generator():
-        async for chunk in resp.aiter_bytes():
-            yield chunk
         
-    return StreamingResponse(
-        response_generator(),
-        status_code=resp.status_code,
-        headers=resp_headers
-    )
+        resp_headers = dict(resp.headers)
+        resp_headers.pop("content-encoding", None)
+        resp_headers.pop("content-length", None)
+        
+        async def response_generator():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+            finally:
+                await resp.aclose()
+            
+        return StreamingResponse(
+            response_generator(),
+            status_code=resp.status_code,
+            headers=resp_headers
+        )
+    except Exception as e:
+        if resp is not None:
+            await resp.aclose()
+        logger.error(f"Failed to send proxy request: {e}", exc_info=True)
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=502, detail=f"Bad Gateway: {str(e)}")
 
 @router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
 async def proxy_gateway(request: Request, full_path: str):
