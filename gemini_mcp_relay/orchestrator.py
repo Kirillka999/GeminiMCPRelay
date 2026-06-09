@@ -21,6 +21,8 @@ async def generate_content_loop(
         current_contents = list(contents)
         
     accumulated_parts = []
+    retry_count = 0
+    max_retries = 5
     
     while True:
         response = await client.aio.models.generate_content(
@@ -35,11 +37,17 @@ async def generate_content_loop(
             if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                 parts = response.candidates[0].content.parts
                 if len(parts) == 1 and getattr(parts[0], "text", None) == "":
-                    is_empty_response = True
-                    logger.warning("Empty text response received from Gemini API. Retrying...")
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        is_empty_response = True
+                        logger.warning(f"Empty text response received from Gemini API. Retrying ({retry_count}/{max_retries})...")
+                    else:
+                        logger.error("Max retries reached for empty text response workaround.")
 
         if is_empty_response:
             continue
+
+        retry_count = 0
 
         if response.candidates and response.candidates[0].content:
             model_content = response.candidates[0].content
@@ -96,6 +104,9 @@ async def stream_generate_content_loop(
     else:
         current_contents = list(contents)
     
+    retry_count = 0
+    max_retries = 5
+    
     while True:
         response_stream = await client.aio.models.generate_content_stream(
             model=model_name,
@@ -119,11 +130,17 @@ async def stream_generate_content_loop(
         is_empty_response = False
         if fix_gemini_empty_response and not function_calls_to_process:
             if len(model_parts_this_turn) == 1 and getattr(model_parts_this_turn[0], "text", None) == "":
-                is_empty_response = True
-                logger.warning("Empty text response received from Gemini API in stream. Retrying...")
+                if retry_count < max_retries:
+                    retry_count += 1
+                    is_empty_response = True
+                    logger.warning(f"Empty text response received from Gemini API in stream. Retrying ({retry_count}/{max_retries})...")
+                else:
+                    logger.error("Max retries reached for empty text response workaround in stream.")
 
         if is_empty_response:
             continue
+
+        retry_count = 0
 
         for chunk in chunks_this_turn:
             yield chunk

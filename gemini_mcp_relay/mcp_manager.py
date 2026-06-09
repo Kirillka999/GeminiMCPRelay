@@ -2,6 +2,7 @@ import asyncio
 import json
 import base64
 import logging
+import re
 from contextlib import AsyncExitStack
 import httpx
 from fastapi import HTTPException
@@ -294,7 +295,6 @@ class MCPConnectionManager:
         tool_name_counts = {}
 
         for name, state in self.servers.items():
-            import re
             safe_server_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name).lower()
             
             try:
