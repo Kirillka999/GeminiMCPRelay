@@ -88,8 +88,8 @@ def test_real_chat_history_unsquashing(fake_google_server):
     
     # STEP 3: Route the intercepted SDK payload through the local proxy
     os.environ["GEMINI_BASE_URL"] = "http://127.0.0.1:9999"
-    import app.api
-    importlib.reload(app.api) 
+    import gemini_mcp_relay.api
+    importlib.reload(gemini_mcp_relay.api) 
     from main import app as proxy_app
     
     proxy_client = TestClient(proxy_app)

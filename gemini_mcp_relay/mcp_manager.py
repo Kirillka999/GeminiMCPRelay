@@ -11,7 +11,7 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 
-from app.formatters import normalize_tool_schema
+from gemini_mcp_relay.formatters import normalize_tool_schema
 
 logger = logging.getLogger(__name__)
 
@@ -105,24 +105,43 @@ class MCPServerAdapter:
 
 
 class MCPConnectionManager:
-    def __init__(self, mcp_header: str, excluded_tools_header: str = None):
-        self.mcp_header = mcp_header
-        self.excluded_tools_header = excluded_tools_header
+    def __init__(self, server_config: dict = None, excluded_tools: list = None):
+        self.server_config = server_config or {}
+        self.excluded_tools = set(excluded_tools) if excluded_tools else set()
         self.server_stacks = []
         self.adapters_map = {}
         self.mcp_declarations = []
         self.raw_tools = []
         self._connected = False
 
+    @classmethod
+    def from_http_headers(cls, mcp_header: str, excluded_tools_header: str = None):
+        server_config = {}
+        excluded_tools = []
+        
+        if mcp_header:
+            try:
+                decoded_json = base64.b64decode(mcp_header).decode("utf-8")
+                server_config = json.loads(decoded_json)
+            except Exception as e:
+                logger.error(f"Failed to parse X-MCP-Servers header: {e}")
+                raise HTTPException(status_code=400, detail=f"Failed to parse X-MCP-Servers: {str(e)}")
+                
+        if excluded_tools_header:
+            try:
+                decoded = base64.b64decode(excluded_tools_header).decode("utf-8")
+                excluded_tools = json.loads(decoded)
+            except Exception as e:
+                logger.warning(f"Failed to parse excluded tools header: {e}")
+
+        return cls(server_config=server_config, excluded_tools=excluded_tools)
+
     async def connect(self, fetch_raw_tools=False):
-        if self._connected or not self.mcp_header:
+        if self._connected or not self.server_config:
             return
             
-        excluded_tools = self._parse_excluded_tools()
-        connections = self._parse_connections()
-
-        server_data, tool_name_counts = await self._gather_servers_data(connections, excluded_tools, fetch_raw_tools)
-        self._register_gathered_tools(server_data, tool_name_counts, excluded_tools, fetch_raw_tools)
+        server_data, tool_name_counts = await self._gather_servers_data(self.server_config, self.excluded_tools, fetch_raw_tools)
+        self._register_gathered_tools(server_data, tool_name_counts, self.excluded_tools, fetch_raw_tools)
                 
         self._connected = True
 
@@ -273,24 +292,6 @@ class MCPConnectionManager:
                 await s.aclose()
             except BaseException as e:
                 logger.warning(f"Ignored error closing stack: {e}")
-
-    def _parse_excluded_tools(self) -> set:
-        if not self.excluded_tools_header:
-            return set()
-        try:
-            decoded = base64.b64decode(self.excluded_tools_header).decode("utf-8")
-            return set(json.loads(decoded))
-        except Exception as e:
-            logger.warning(f"Failed to parse excluded tools header: {e}")
-            return set()
-
-    def _parse_connections(self) -> dict:
-        try:
-            decoded_json = base64.b64decode(self.mcp_header).decode("utf-8")
-            return json.loads(decoded_json)
-        except Exception as e:
-            logger.error(f"Failed to parse X-MCP-Servers header: {e}")
-            raise HTTPException(status_code=400, detail=f"Failed to parse X-MCP-Servers: {str(e)}")
 
     def _create_transport_context(self, name: str, config: dict):
         url = config.get("url")

@@ -8,9 +8,9 @@ from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import types
 
-from app.mcp_manager import MCPConnectionManager
-from app.formatters import parse_request_payload
-from app.orchestrator import generate_content_loop, stream_generate_content_loop
+from gemini_mcp_relay.mcp_manager import MCPConnectionManager
+from gemini_mcp_relay.formatters import parse_request_payload
+from gemini_mcp_relay.orchestrator import generate_content_loop, stream_generate_content_loop
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -29,7 +29,7 @@ async def list_mcp_tools(request: Request):
         return {"tools": []}
         
     try:
-        manager = MCPConnectionManager(mcp_header)
+        manager = MCPConnectionManager.from_http_headers(mcp_header)
         try:
             await manager.connect(fetch_raw_tools=True)
             return {"tools": manager.raw_tools}
@@ -63,15 +63,17 @@ async def handle_generate_content(model_name: str, request: Request):
     mcp_header = request.headers.get("x-mcp-servers")
     excluded_header = request.headers.get("x-mcp-excluded-tools")
     
-    manager = MCPConnectionManager(mcp_header, excluded_header)
+    manager = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
     try:
         await manager.connect()
         
         payload = await request.json()
         client, contents, config = _initialize_client_and_config(api_key, payload, manager.mcp_declarations)
         
-        response_dict = await generate_content_loop(client, model_name, contents, config, manager.adapters_map)
-        return response_dict
+        response_obj = await generate_content_loop(client, model_name, contents, config, manager.adapters_map)
+        from gemini_mcp_relay.formatters import convert_bytes_to_b64
+        response_dict = response_obj.model_dump(exclude_none=True, by_alias=True)
+        return convert_bytes_to_b64(response_dict)
     except Exception as e:
         logger.error(f"Error during generation: {e}", exc_info=True)
         # re-raise HTTP exceptions (e.g. from manager.connect)
@@ -92,13 +94,16 @@ async def handle_stream_generate_content(model_name: str, request: Request):
     payload = await request.json()
 
     async def event_generator():
-        manager = MCPConnectionManager(mcp_header, excluded_header)
+        manager = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
+        from gemini_mcp_relay.formatters import convert_bytes_to_b64
         try:
             await manager.connect()
             client, contents, config = _initialize_client_and_config(api_key, payload, manager.mcp_declarations)
             
-            async for event in stream_generate_content_loop(client, model_name, contents, config, manager.adapters_map):
-                yield event
+            async for chunk_obj in stream_generate_content_loop(client, model_name, contents, config, manager.adapters_map):
+                chunk_dict = chunk_obj.model_dump(exclude_none=True, by_alias=True)
+                convert_bytes_to_b64(chunk_dict)
+                yield f"data: {json.dumps(chunk_dict, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.error(f"Error during streaming generation: {e}", exc_info=True)
             error_json = {"error": {"code": 500, "message": str(e), "status": "INTERNAL"}}

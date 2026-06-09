@@ -6,9 +6,9 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY pyproject.toml .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir .[server]
 
 COPY . .
 
@@ -16,4 +16,4 @@ EXPOSE 8000
 
 ENV GEMINI_BASE_URL="https://generativelanguage.googleapis.com"
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "gemini_mcp_relay.server.main:app", "--host", "0.0.0.0", "--port", "8000"]

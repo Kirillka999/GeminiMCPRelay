@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemini-mcp-relay"
+version = "0.1.0"
+description = "Google GenAI SDK wrapper for integrating the Model Context Protocol (MCP)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-genai>=1.73.1",
+    "mcp>=1.27.0",
+    "pydantic>=2.13.3",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.136.1",
+    "uvicorn>=0.46.0",
+    "sse-starlette>=3.3.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["gemini_mcp_relay", "gemini_mcp_relay.*"]

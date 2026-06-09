@@ -52,8 +52,8 @@ def test_excluded_tools(fake_google_server):
 
     # STEP 1: Intercept the raw payload going to Google via local TestClient
     os.environ["GEMINI_BASE_URL"] = "http://127.0.0.1:9994"
-    import app.api
-    importlib.reload(app.api)
+    import gemini_mcp_relay.api
+    importlib.reload(gemini_mcp_relay.api)
     from main import app as proxy_app
     proxy_client = TestClient(proxy_app)
     

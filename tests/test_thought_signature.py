@@ -95,8 +95,8 @@ def test_thought_signature_preservation(fake_google_server):
 
     # STEP 3: Route the SDK payload through the local proxy parser
     os.environ["GEMINI_BASE_URL"] = "http://127.0.0.1:9993"
-    import app.api
-    importlib.reload(app.api)
+    import gemini_mcp_relay.api
+    importlib.reload(gemini_mcp_relay.api)
     from main import app as proxy_app
     proxy_client = TestClient(proxy_app)
     
