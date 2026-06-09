@@ -133,7 +133,7 @@ print(response.text)
 
 ---
 
-## Advanced Features
+## Additional Features
 
 ### Disabling Specific Tools
 You can manually prevent specific tools from being passed to the model.

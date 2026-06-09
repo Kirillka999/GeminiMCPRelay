@@ -1,8 +1,5 @@
-import json
 import logging
 from google.genai import types
-
-from gemini_mcp_relay.formatters import build_squashed_response, build_synthetic_chunk, convert_bytes_to_b64
 
 logger = logging.getLogger(__name__)
 
