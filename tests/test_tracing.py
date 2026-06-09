@@ -1,38 +1,44 @@
 """
 Tests for internal tracing of function calls and ID mapping.
 
-When the proxy returns the final response to the client, it squashes 
-all intermediate tool executions into a single 'model' response. 
-This test verifies that the squashed parts contain `functionCall`, 
-`functionResponse`, and `text`, and ensures that `id` fields match correctly.
+When the wrapper returns the final response to the client, it includes 
+all intermediate tool executions in the 'model' response. 
+This test verifies that the parts contain `function_call`, 
+`function_response`, and `text`, and ensures that `id` fields match correctly.
 """
-import base64
-import json
 import os
+import pytest
 from google import genai
+from google.genai import types
+from gemini_mcp_relay import MCPClientWrapper
 
-def test_math_mcp_tracing():
+@pytest.mark.asyncio
+async def test_math_mcp_tracing():
     mcp_config = {
         "math_server": {
             "url": "https://mathematics.fastmcp.app/mcp"
         }
     }
-    mcp_header = base64.b64encode(json.dumps(mcp_config).encode("utf-8")).decode("utf-8")
 
-    client = genai.Client(
+    base_url = os.environ.get("TEST_GEMINI_BASE_URL")
+    http_opts = types.HttpOptions(base_url=base_url) if base_url else None
+
+    base_client = genai.Client(
         api_key=os.environ.get("TEST_GEMINI_API_KEY"),
-        http_options={
-            "base_url": os.environ.get("TEST_GEMINI_BASE_URL"),
-            "headers": {"x-mcp-servers": mcp_header}
-        }
+        http_options=http_opts
     )
+
+    client = MCPClientWrapper(base_client)
 
     prompt = "Using the calculate_expression tool, calculate 123 * 456. Output only the answer as a single number, nothing else."
 
-    response = client.models.generate_content(
-        model="gemini-3.1-flash-lite-preview",
-        contents=prompt,
-    )
+    async with client:
+        await client.mcp.add_server("math_server", mcp_config["math_server"])
+        
+        response = await client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=prompt,
+        )
 
     found_call = False
     found_response = False

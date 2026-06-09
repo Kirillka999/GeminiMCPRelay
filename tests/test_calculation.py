@@ -39,7 +39,7 @@ async def test_math_mcp_calculation():
         await client.mcp.add_server("math_server", mcp_config["math_server"])
         
         response = await client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=prompt,
         )
 

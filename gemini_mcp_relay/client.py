@@ -6,12 +6,31 @@ from google.genai.chats import AsyncChats
 
 from gemini_mcp_relay.mcp_manager import MCPConnectionManager
 from gemini_mcp_relay.orchestrator import generate_content_loop, stream_generate_content_loop
+from gemini_mcp_relay.formatters import unsquash_contents
 
 logger = logging.getLogger(__name__)
 
 class AsyncModelsProxy:
     def __init__(self, wrapper):
         self._wrapper = wrapper
+
+    def _prepare_contents(self, contents):
+        if not isinstance(contents, list):
+            contents_list = [contents]
+        else:
+            contents_list = list(contents)
+            
+        formatted_contents = []
+        for c in contents_list:
+            if isinstance(c, types.Content):
+                formatted_contents.append(c)
+            elif isinstance(c, str):
+                formatted_contents.append(types.Content(role="user", parts=[types.Part.from_text(text=c)]))
+            else:
+                formatted_contents.append(c)
+                
+        # Unsquash the history to prevent SDK sequence validation errors
+        return unsquash_contents(formatted_contents)
 
     async def _setup_and_run(self, loop_func, model: str, contents, config: types.GenerateContentConfig | None = None, **kwargs):
         manager = self._wrapper.mcp
@@ -27,10 +46,12 @@ class AsyncModelsProxy:
                 config.tools = []
             config.tools.append(mcp_tool)
         
+        processed_contents = self._prepare_contents(contents)
+        
         return await loop_func(
             client=self._wrapper.base_client,
             model_name=model,
-            contents=contents,
+            contents=processed_contents,
             config=config,
             adapters_map=manager.adapters_map
         )
@@ -52,10 +73,12 @@ class AsyncModelsProxy:
                 config.tools = []
             config.tools.append(mcp_tool)
 
+        processed_contents = self._prepare_contents(contents)
+
         async for chunk in stream_generate_content_loop(
             client=self._wrapper.base_client,
             model_name=model,
-            contents=contents,
+            contents=processed_contents,
             config=config,
             adapters_map=manager.adapters_map
         ):

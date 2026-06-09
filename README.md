@@ -1,153 +1,169 @@
 # Gemini MCP Relay
 
-A FastAPI proxy server for integrating the Model Context Protocol (MCP) with the Google Gemini API.
+`gemini-mcp-relay` is a Python SDK Wrapper and a standalone proxy that seamlessly integrates the **Model Context Protocol (MCP)** with the official Google GenAI SDK.
 
-This server acts as a bridge between the client application and Google's servers. It intercepts the official Google request format, fetches tools from remote MCP servers, converts them into the Gemini format, and autonomously orchestrates the `function_calling` execution loop, streaming the final result back to the client.
+It intercepts requests to Google's API, fetches tools from your remote MCP servers, passes them to the model, and autonomously orchestrates the function-calling loop.
 
-## Installation and Setup
+## Installation
 
-### Method 1. Locally (Python venv)
-1. Ensure dependencies are installed:
+Install via pip. You can choose to install just the core library (for local SDK wrapping) or include the proxy server dependencies.
+
 ```bash
-pip install -r requirements.txt
+# 1. Install for local Python SDK usage
+pip install gemini-mcp-relay
 ```
 
-2. Run the server:
 ```bash
-python main.py
-```
-The server will start at `http://0.0.0.0:8000`.
-
-### Method 2. Via Docker (Recommended for production)
-The proxy is fully ready for deployment in a Docker container.
-
-1. Build the image:
-```bash
-docker build -t gemini-mcp-relay .
+# Install with proxy server capabilities
+pip install "gemini-mcp-relay[server]"
 ```
 
-2. Run the container:
-```bash
-docker run -d -p 8000:8000 --name mcp-relay gemini-mcp-relay
+---
+
+## 🔨 Usage Mode 1: Local SDK Wrapper
+
+If you are writing a Python application, you don't need to run a separate server. You can use the `MCPClientWrapper` to wrap the official `google.genai.Client`.
+
+The wrapper features a stateful connection pool, meaning it maintains persistent connections to your MCP servers via an `async with` block.
+
+### Example: Using MCP servers locally
+
+```python
+import asyncio
+from google import genai
+from gemini_mcp_relay import MCPClientWrapper
+
+async def main():
+    # 1. Initialize the standard Google GenAI client
+    base_client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
+    
+    # 2. Wrap it with our MCP Client
+    client = MCPClientWrapper(base_client)
+    
+    # 3. Open the connection pool context
+    async with client:
+        # Dynamically add an MCP server (connection stays open)
+        await client.mcp.add_server("math_server", {
+            "url": "https://mathematics.fastmcp.app/mcp"
+        })
+        
+        # --- You can use single-turn generation ---
+        # response = await client.models.generate_content(
+        #     model="gemini-3.5-flash",
+        #     contents="What is 125 * 456? Use the calculation tool."
+        # )
+        # print("Response:", response.text)
+        # -------------------------------------------
+        
+        # --- Or you can use the standard chats module ---
+        chat = client.chats.create(model="gemini-3.5-flash")
+        
+        print("Model is thinking...")
+        response = await chat.send_message("What is 125 * 456? Use the calculate tool.")
+        print("Response:", response.text)
+        
+        # You can dynamically add or remove servers on the fly
+        await client.mcp.remove_server("math_server")
+        
+        await client.mcp.add_server("search_server", {
+            "url": "https://mcp.exa.ai/mcp",
+            "type": "sse", # explicitly tell the proxy to use SSE transport
+            "headers": {"Authorization": "Bearer YOUR_TOKEN"}
+        })
+        
+        response = await chat.send_message("Now search the web for the latest news.")
+        print("Response:", response.text)
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-## Configuration (Environment Variables)
+---
 
-When starting the server (both locally and in Docker), you can override the base URL to which the proxy will send requests.
+## 🔨 Usage Mode 2: Standalone Proxy Server
 
-To do this, set the `GEMINI_BASE_URL` environment variable:
+If you are building a non-Python application (e.g., Node.js, Go) or simply prefer to run the MCP Relay as a microservice, you can start the built-in FastAPI server.
 
-**Docker example:**
+### 1. Start the Server
+*(Requires the `[server]` installation extra)*
+
 ```bash
-docker run -d -p 8000:8000 -e GEMINI_BASE_URL="https://generativelanguage.googleapis.com" gemini-mcp-relay
+gemini-mcp-relay --port 8000
 ```
-*(If left empty, the proxy will automatically route requests to the standard Google API servers).*
+The server is now running and fully emulates the Google API.
 
-## Usage from a Client Application
+### 2. Connect from any Client
 
-The server fully emulates the Google API. All you need to do on the client side is replace the `base_url` with the proxy's address and pass a Base64-encoded `X-MCP-Servers` header.
+On the client side, replace the Google `base_url` with the proxy's address (`http://127.0.0.1:8000`) and pass your MCP configuration via the `X-MCP-Servers` HTTP header (encoded in Base64).
 
-Python example (using the official `google.genai` SDK):
-
+**Python SDK Example:**
 ```python
 import base64
 import json
 from google import genai
 
-# 1. Build the MCP servers configuration
-# You can connect multiple servers. 
-# For private servers, you can pass an optional 'headers' dictionary with authorization tokens.
-# The proxy supports both standard "http" (streamable HTTP) and "sse" connection types.
+# Define your MCP servers
 mcp_config = {
     "math_server": {
         "url": "https://mathematics.fastmcp.app/mcp"
-        # "type" is omitted, defaults to "http" (streamable HTTP)
-    },
-    "exa_search": {
-        "url": "https://mcp.exa.ai/mcp",
-        "type": "sse", # explicitly tell the proxy to use a pure SSE transport connection
-        "headers": {
-            "Authorization": "Bearer YOUR_SECRET_TOKEN"
-        }
-    },
-    "private_database": {
-        "url": "https://api.mycompany.com/mcp",
-        "headers": {
-            "Authorization": "Bearer YOUR_SECRET_TOKEN"
-        }
     }
 }
+
+# Encode to Base64 to pass over HTTP
 mcp_header = base64.b64encode(json.dumps(mcp_config).encode("utf-8")).decode("utf-8")
 
-# 2. Connect to our proxy
+# Connect to the local Proxy Server
 client = genai.Client(
-    api_key="YOUR_GEMINI_API_KEY", # The key will be sent to the proxy, and the proxy will pass it to Google
+    api_key="YOUR_GEMINI_API_KEY",
     http_options={
         "base_url": "http://127.0.0.1:8000",
         "headers": {"x-mcp-servers": mcp_header}
     }
 )
 
-# 3. Make a standard request (The proxy will fetch tools from MCP, execute them in a loop, and return the response)
-response = client.models.generate_content_stream(
-    model="gemini-2.5-flash",
-    contents="Calculate the square root of 144, and then multiply the result by 10. Write down the steps.",
+# The server handles the MCP orchestration automatically
+response = client.models.generate_content(
+    model="gemini-3.5-flash",
+    contents="Calculate 15 * 8"
 )
-
-# 4. Read the text stream (SDK might print warnings about non-text parts, but it works)
-for chunk in response:
-    if chunk.text:
-        print(chunk.text, end="", flush=True)
+print(response.text)
 ```
 
-### Retrieving Available Tools
+*(Note: The server proxy operates in a stateless manner. It will establish and close connections to the MCP servers on every single HTTP request).*
 
-If you need to retrieve a list of all available tools and their JSON schemas from the configured MCP servers, you can use the `GET /v1/mcp/tools` endpoint. 
+---
 
-You must provide the `X-MCP-Servers` header just like in standard generation requests. The endpoint will connect to the servers and return a unified list of tool schemas:
+## Advanced Features
+
+### Disabling Specific Tools
+You can manually prevent specific tools from being passed to the model.
+
+**Locally:** Pass `excluded_tools` to the wrapper.
+```python
+client = MCPClientWrapper(base_client, excluded_tools=["unsafe_delete_tool"])
+```
+
+**Via Server:** Pass a Base64-encoded array to the `X-MCP-Excluded-Tools` header.
+
+### Tracing Tool Execution
+Whether you are using the **Local SDK Wrapper** or connecting via the **Standalone Proxy Server**, the tool execution lifecycle remains completely transparent. Because the library executes tools autonomously on your behalf, it automatically injects the intermediate `function_call` and `function_response` steps directly into the final response (or SSE stream chunks). 
+
+This allows your application to perfectly trace and log exactly which MCP tools were used behind the scenes.
+
+```python
+for part in response.candidates[0].content.parts:
+    if part.function_call:
+        print(f"[🔧 Tool Executed: {part.function_call.name}]")
+    elif part.function_response:
+        print(f"[✅ Tool Result]: {part.function_response.response}")
+    elif part.text:
+        print(part.text)
+```
+
+### Retrieving Available Tools (Server Mode Only)
+If you need to retrieve a list of all available tools and their JSON schemas from the configured MCP servers via HTTP, use the `GET /v1/mcp/tools` endpoint. 
 
 ```bash
 curl http://127.0.0.1:8000/v1/mcp/tools \
   -H "X-MCP-Servers: <BASE64_ENCODED_CONFIG>"
-```
-
-### Disabling Specific Tools
-
-You can manually prevent specific tools from being passed to the model by using the `X-MCP-Excluded-Tools` header. This is useful if an MCP server exposes many tools but you only want the model to have access to a specific subset.
-
-Pass a Base64-encoded JSON array of tool names (strings) you want to exclude:
-
-```python
-import base64
-import json
-
-excluded_tools = ["unsafe_delete_tool", "admin_panel_access"]
-excluded_header = base64.b64encode(json.dumps(excluded_tools).encode("utf-8")).decode("utf-8")
-
-# Add "x-mcp-excluded-tools": excluded_header to your http_options headers
-```
-
-### Advanced: Tracing Tool Execution
-
-Because the proxy executes tools autonomously, it injects the `function_call` and `function_response` data directly into the stream chunks so your client application can see exactly what tools were used behind the scenes.
-
-You can inspect these parts by iterating through the chunk structure:
-
-```python
-for chunk in response:
-    if chunk.candidates and chunk.candidates[0].content and chunk.candidates[0].content.parts:
-        for part in chunk.candidates[0].content.parts:
-            # 1. Catch the tool execution request
-            if part.function_call:
-                print(f"\n[🔧 Tool Executed by Relay: {part.function_call.name}]")
-                print(f"Arguments: {part.function_call.args}")
-            
-            # 2. Catch the tool execution result
-            elif part.function_response:
-                print(f"[✅ Tool Result ({part.function_response.name})]:")
-                print(f"{part.function_response.response}\n")
-            
-            # 3. Catch the standard model text output
-            elif part.text:
-                print(part.text, end="", flush=True)
 ```

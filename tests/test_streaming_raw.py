@@ -1,67 +1,60 @@
 """
-Tests the raw Server-Sent Events (SSE) streaming format.
+Tests the raw streaming behavior of the wrapper.
 
-Verifies that the proxy correctly streams events in the official format,
-and ensures that synthetic `functionResponse` chunks are injected directly 
-into the SSE stream so that the client SDK is aware of internal tool executions.
+Verifies that the wrapper correctly yields `GenerateContentResponse` objects,
+and ensures that synthetic `functionResponse` chunks are injected into the stream 
+so that the calling application is aware of internal tool executions.
 """
-import base64
-import json
 import os
-import requests
+import pytest
+from google import genai
+from google.genai import types
+from gemini_mcp_relay import MCPClientWrapper
 
-def test_math_mcp_raw_streaming_sse():
+@pytest.mark.asyncio
+async def test_math_mcp_raw_streaming_sse():
     mcp_config = {
         "math_server": {
             "url": "https://mathematics.fastmcp.app/mcp"
         }
     }
-    mcp_header = base64.b64encode(json.dumps(mcp_config).encode("utf-8")).decode("utf-8")
     
-    url = f"{os.environ.get('TEST_GEMINI_BASE_URL')}/v1beta/models/gemini-3.1-flash-lite-preview:streamGenerateContent"
-    headers = {
-        "x-goog-api-key": os.environ.get("TEST_GEMINI_API_KEY"),
-        "x-mcp-servers": mcp_header,
-        "Content-Type": "application/json"
-    }
+    base_url = os.environ.get("TEST_GEMINI_BASE_URL")
+    http_opts = types.HttpOptions(base_url=base_url) if base_url else None
     
-    payload = {
-        "contents": [{
-            "role": "user",
-            "parts": [{"text": "Using the calculate_expression tool, calculate 200 + 300. Reply with just the number."}]
-        }]
-    }
+    base_client = genai.Client(
+        api_key=os.environ.get("TEST_GEMINI_API_KEY"),
+        http_options=http_opts
+    )
 
-    # Request with stream=True for manual SSE reading
-    response = requests.post(url, headers=headers, json=payload, stream=True)
+    client = MCPClientWrapper(base_client)
     
-    assert response.status_code == 200
-    
+    prompt = "Using the calculate_expression tool, calculate 200 + 300. Reply with just the number."
+
     found_call = False
     found_response = False
     found_text = False
     
-    for line in response.iter_lines():
-        if line:
-            decoded_line = line.decode('utf-8')
-            
-            # Validate standard SSE format
-            assert decoded_line.startswith("data: ")
-            
-            json_str = decoded_line[6:] # Strip "data: " prefix
-            chunk_data = json.loads(json_str)
-            
-            candidates = chunk_data.get("candidates", [])
-            if candidates and candidates[0].get("content", {}).get("parts"):
-                parts = candidates[0]["content"]["parts"]
+    async with client:
+        await client.mcp.add_server("math_server", mcp_config["math_server"])
+        
+        stream = client.models.generate_content_stream(
+            model="gemini-3.5-flash",
+            contents=prompt,
+        )
+        
+        async for chunk in stream:
+            # chunk is a types.GenerateContentResponse
+            if chunk.candidates and chunk.candidates[0].content and chunk.candidates[0].content.parts:
+                parts = chunk.candidates[0].content.parts
                 for part in parts:
-                    if "functionCall" in part:
+                    if part.function_call:
                         found_call = True
-                    elif "functionResponse" in part:
+                    elif part.function_response:
                         found_response = True
-                    elif "text" in part:
+                    elif part.text:
                         found_text = True
                         
-    assert found_call, "SSE stream is missing a chunk with 'functionCall'"
-    assert found_response, "SSE stream is missing a synthetic chunk with 'functionResponse'"
-    assert found_text, "SSE stream is missing a chunk with final 'text'"
+    assert found_call, "Stream is missing a chunk with 'function_call'"
+    assert found_response, "Stream is missing a synthetic chunk with 'function_response'"
+    assert found_text, "Stream is missing a chunk with final 'text'"

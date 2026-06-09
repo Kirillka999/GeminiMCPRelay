@@ -9,7 +9,7 @@ Validates the behavior of auxiliary routes and proxy security features:
 import base64
 import json
 from fastapi.testclient import TestClient
-from main import app
+from gemini_mcp_relay.server.main import app
 
 client = TestClient(app)
 
@@ -31,13 +31,13 @@ def test_get_mcp_tools():
     assert "calculate_expression" in tool_names, f"Tool 'calculate_expression' not found. Available tools: {tool_names}"
 
 def test_auth_missing_key():
-    response = client.post("/v1beta/models/gemini-3.1-flash-lite-preview:generateContent", json={})
+    response = client.post("/v1beta/models/gemini-3.5-flash:generateContent", json={})
     assert response.status_code == 401, f"Expected status 401, got {response.status_code}"
     assert "Missing API Key" in response.json()["detail"]
 
 def test_invalid_mcp_header():
     response = client.post(
-        "/v1beta/models/gemini-3.1-flash-lite-preview:generateContent", 
+        "/v1beta/models/gemini-3.5-flash:generateContent", 
         headers={"x-goog-api-key": "fake_key", "x-mcp-servers": "invalid_base64_string!"},
         json={"contents": []}
     )
