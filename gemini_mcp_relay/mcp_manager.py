@@ -213,13 +213,15 @@ class MCPConnectionManager:
         if config.get("command") or config.get("transport") == "stdio":
             raise HTTPException(status_code=400, detail=f"Transport 'stdio' is not allowed for server '{name}'.")
             
-        transport_ctx = self._create_transport_context(name, config)
+        transport_ctx, http_client = self._create_transport_context(name, config)
         if not transport_ctx:
             return
 
         server_stack = AsyncExitStack()
         try:
             try:
+                if http_client:
+                    await server_stack.enter_async_context(http_client)
                 streams = await server_stack.enter_async_context(transport_ctx)
                 read_stream, write_stream = streams[:2] if len(streams) >= 2 else streams
                 
@@ -409,19 +411,15 @@ class MCPConnectionManager:
 
         if httpUrl:
             logger.warning(f"MCP server '{name}': 'httpUrl' is deprecated. Please migrate to 'url' with 'type: \"http\"'.")
-            return streamable_http_client(
-                url=httpUrl, 
-                http_client=httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(5.0, read=300.0))
-            )
+            client = httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(5.0, read=300.0))
+            return streamable_http_client(url=httpUrl, http_client=client), client
         
         if url and mcp_type == "sse":
-            return sse_client(url=url, headers=headers)
+            return sse_client(url=url, headers=headers), None
         
         if url:
             # Default to streamable_http_client for "http" or undefined
-            return streamable_http_client(
-                url=url, 
-                http_client=httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(5.0, read=300.0))
-            )
+            client = httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(5.0, read=300.0))
+            return streamable_http_client(url=url, http_client=client), client
             
-        return None
+        return None, None

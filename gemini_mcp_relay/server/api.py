@@ -113,6 +113,21 @@ async def handle_stream_generate_content(model_name: str, request: Request):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+_shared_proxy_client: httpx.AsyncClient | None = None
+
+def get_proxy_client() -> httpx.AsyncClient:
+    global _shared_proxy_client
+    if _shared_proxy_client is None:
+        _shared_proxy_client = httpx.AsyncClient()
+    return _shared_proxy_client
+
+@router.on_event("shutdown")
+async def shutdown_event():
+    global _shared_proxy_client
+    if _shared_proxy_client is not None:
+        await _shared_proxy_client.aclose()
+        _shared_proxy_client = None
+
 async def transparent_proxy(request: Request, full_path: str):
     target_base = GEMINI_BASE_URL
     target_url = f"{target_base.rstrip('/')}/{full_path}"
@@ -128,26 +143,26 @@ async def transparent_proxy(request: Request, full_path: str):
             
     body = await request.body()
     
-    client = httpx.AsyncClient()
-    req = client.build_request(
-        method=request.method,
-        url=target_url,
-        headers=headers,
-        content=body
-    )
-    
-    resp = await client.send(req, stream=True)
+    client = get_proxy_client()
+    try:
+        req = client.build_request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            content=body
+        )
+        resp = await client.send(req, stream=True)
+    except Exception as e:
+        logger.error(f"Failed to send proxy request: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Bad Gateway: {str(e)}")
     
     resp_headers = dict(resp.headers)
     resp_headers.pop("content-encoding", None)
     resp_headers.pop("content-length", None)
     
     async def response_generator():
-        try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        finally:
-            await client.aclose()
+        async for chunk in resp.aiter_bytes():
+            yield chunk
         
     return StreamingResponse(
         response_generator(),

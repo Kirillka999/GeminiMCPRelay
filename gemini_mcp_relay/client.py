@@ -104,7 +104,11 @@ class MCPClientWrapper:
 
     async def __aenter__(self):
         if self._initial_mcp_servers:
-            await self.mcp.connect_all_from_config(self._initial_mcp_servers)
+            try:
+                await self.mcp.connect_all_from_config(self._initial_mcp_servers)
+            except BaseException:
+                await self.mcp.close()
+                raise
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
