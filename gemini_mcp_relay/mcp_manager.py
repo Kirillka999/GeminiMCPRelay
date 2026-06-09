@@ -104,15 +104,19 @@ class MCPServerAdapter:
             return combined_text
 
 
+class ServerState:
+    def __init__(self, stack: AsyncExitStack, session: ClientSession, adapter: MCPServerAdapter):
+        self.stack = stack
+        self.session = session
+        self.adapter = adapter
+
 class MCPConnectionManager:
-    def __init__(self, server_config: dict = None, excluded_tools: list = None):
-        self.server_config = server_config or {}
+    def __init__(self, excluded_tools: list = None):
         self.excluded_tools = set(excluded_tools) if excluded_tools else set()
-        self.server_stacks = []
+        self.servers = {}  # name -> ServerState
         self.adapters_map = {}
         self.mcp_declarations = []
         self.raw_tools = []
-        self._connected = False
 
     @classmethod
     def from_http_headers(cls, mcp_header: str, excluded_tools_header: str = None):
@@ -134,49 +138,97 @@ class MCPConnectionManager:
             except Exception as e:
                 logger.warning(f"Failed to parse excluded tools header: {e}")
 
-        return cls(server_config=server_config, excluded_tools=excluded_tools)
+        instance = cls(excluded_tools=excluded_tools)
+        return instance, server_config
 
-    async def connect(self, fetch_raw_tools=False):
-        if self._connected or not self.server_config:
+    async def connect_all_from_config(self, config_dict: dict, fetch_raw_tools=False):
+        """Helper for the FastAPI server to connect multiple servers at once."""
+        for name, config in config_dict.items():
+            await self.add_server(name, config, fetch_raw_tools, skip_rebuild=True)
+        await self._rebuild_state(fetch_raw_tools)
+
+    async def add_server(self, name: str, config: dict, fetch_raw_tools=False, skip_rebuild=False):
+        if name in self.servers:
+            logger.warning(f"Server '{name}' is already connected.")
             return
+
+        if config.get("command") or config.get("transport") == "stdio":
+            raise HTTPException(status_code=400, detail=f"Transport 'stdio' is not allowed for server '{name}'.")
             
-        server_data, tool_name_counts = await self._gather_servers_data(self.server_config, self.excluded_tools, fetch_raw_tools)
-        self._register_gathered_tools(server_data, tool_name_counts, self.excluded_tools, fetch_raw_tools)
-                
-        self._connected = True
+        transport_ctx = self._create_transport_context(name, config)
+        if not transport_ctx:
+            return
 
-    async def _gather_servers_data(self, connections: dict, excluded_tools: set, fetch_raw_tools: bool) -> tuple[list, dict]:
-        server_data = []
-        tool_name_counts = {}
-
-        for name, config in connections.items():
-            if config.get("command") or config.get("transport") == "stdio":
-                raise HTTPException(status_code=400, detail=f"Transport 'stdio' is not allowed for server '{name}'.")
-                
-            transport_ctx = self._create_transport_context(name, config)
-            if not transport_ctx:
-                continue
-
-            server_stack = AsyncExitStack()
+        server_stack = AsyncExitStack()
+        try:
             try:
                 streams = await server_stack.enter_async_context(transport_ctx)
                 read_stream, write_stream = streams[:2] if len(streams) >= 2 else streams
                 
                 session = await server_stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await asyncio.wait_for(session.initialize(), timeout=20.0)
+            except BaseException as e:
+                raise RuntimeError(f"Connection failed: {e}")
+
+            adapter = MCPServerAdapter(name, session)
+            self.servers[name] = ServerState(server_stack, session, adapter)
+            
+            if not skip_rebuild:
+                await self._rebuild_state(fetch_raw_tools)
+                    
+        except asyncio.CancelledError:
+            try:
+                await server_stack.aclose()
+            except BaseException:
+                pass
+            raise
+        except BaseException as e:
+            logger.error(f"Failed to connect or fetch tools from MCP server '{name}': {e}", exc_info=True)
+            try:
+                await server_stack.aclose()
+            except BaseException:
+                pass
                 
-                import re
-                safe_server_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name).lower()
-                adapter = MCPServerAdapter(name, session)
-                
-                tools_response = await asyncio.wait_for(session.list_tools(), timeout=20.0)
+            if not fetch_raw_tools:
+                raise HTTPException(status_code=502, detail=f"Failed to connect to MCP server '{name}': {str(e)}")
+
+    async def remove_server(self, name: str):
+        if name not in self.servers:
+            return
+            
+        state = self.servers.pop(name)
+        try:
+            await state.stack.aclose()
+        except BaseException as e:
+            logger.warning(f"Ignored error closing stack for '{name}': {e}")
+            
+        await self._rebuild_state(fetch_raw_tools=False)
+
+    async def _rebuild_state(self, fetch_raw_tools: bool):
+        self.adapters_map.clear()
+        self.mcp_declarations.clear()
+        self.raw_tools.clear()
+        
+        server_data, tool_name_counts = await self._gather_servers_data(self.excluded_tools, fetch_raw_tools)
+        self._register_gathered_tools(server_data, tool_name_counts, self.excluded_tools, fetch_raw_tools)
+
+    async def _gather_servers_data(self, excluded_tools: set, fetch_raw_tools: bool) -> tuple[list, dict]:
+        server_data = []
+        tool_name_counts = {}
+
+        for name, state in self.servers.items():
+            import re
+            safe_server_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name).lower()
+            
+            try:
+                tools_response = await asyncio.wait_for(state.session.list_tools(), timeout=20.0)
                 valid_tools = []
                 for t in tools_response.tools:
                     if t.name in excluded_tools or f"{safe_server_name}_{t.name}" in excluded_tools:
                         continue
                     valid_tools.append(t)
                 
-                capabilities = session.get_server_capabilities()
+                capabilities = state.session.get_server_capabilities()
                 has_resources = bool(capabilities and getattr(capabilities, "resources", None))
                 
                 has_list = has_resources and "list_resources" not in excluded_tools and f"{safe_server_name}_list_resources" not in excluded_tools
@@ -193,28 +245,14 @@ class MCPConnectionManager:
                 server_data.append({
                     "name": name,
                     "safe_name": safe_server_name,
-                    "adapter": adapter,
+                    "adapter": state.adapter,
                     "tools": valid_tools,
                     "has_list": has_list,
                     "has_read": has_read
                 })
-                
-                self.server_stacks.append(server_stack)
-                        
-            except asyncio.CancelledError:
-                raise
-            except BaseException as e:
-                logger.error(f"Failed to connect or fetch tools from MCP server '{name}': {e}", exc_info=True)
-                # Cleanup the failed isolated stack
-                try:
-                    await server_stack.aclose()
-                except BaseException:
-                    pass
-                    
-                if fetch_raw_tools:
-                    continue
-                raise HTTPException(status_code=502, detail=f"Failed to connect to MCP server '{name}': {str(e)}")
-                
+            except Exception as e:
+                logger.error(f"Error gathering tools from '{name}': {e}", exc_info=True)
+            
         return server_data, tool_name_counts
 
     def _register_gathered_tools(self, server_data: list, tool_name_counts: dict, excluded_tools: set, fetch_raw_tools: bool):
@@ -287,11 +325,12 @@ class MCPConnectionManager:
             })
 
     async def close(self):
-        for s in self.server_stacks:
+        for state in self.servers.values():
             try:
-                await s.aclose()
+                await state.stack.aclose()
             except BaseException as e:
                 logger.warning(f"Ignored error closing stack: {e}")
+        self.servers.clear()
 
     def _create_transport_context(self, name: str, config: dict):
         url = config.get("url")

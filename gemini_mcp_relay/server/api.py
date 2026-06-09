@@ -29,9 +29,9 @@ async def list_mcp_tools(request: Request):
         return {"tools": []}
         
     try:
-        manager = MCPConnectionManager.from_http_headers(mcp_header)
+        manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header)
         try:
-            await manager.connect(fetch_raw_tools=True)
+            await manager.connect_all_from_config(parsed_config, fetch_raw_tools=True)
             return {"tools": manager.raw_tools}
         finally:
             await manager.close()
@@ -63,9 +63,9 @@ async def handle_generate_content(model_name: str, request: Request):
     mcp_header = request.headers.get("x-mcp-servers")
     excluded_header = request.headers.get("x-mcp-excluded-tools")
     
-    manager = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
+    manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
     try:
-        await manager.connect()
+        await manager.connect_all_from_config(parsed_config)
         
         payload = await request.json()
         client, contents, config = _initialize_client_and_config(api_key, payload, manager.mcp_declarations)
@@ -94,10 +94,10 @@ async def handle_stream_generate_content(model_name: str, request: Request):
     payload = await request.json()
 
     async def event_generator():
-        manager = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
+        manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
         from gemini_mcp_relay.formatters import convert_bytes_to_b64
         try:
-            await manager.connect()
+            await manager.connect_all_from_config(parsed_config)
             client, contents, config = _initialize_client_and_config(api_key, payload, manager.mcp_declarations)
             
             async for chunk_obj in stream_generate_content_loop(client, model_name, contents, config, manager.adapters_map):
