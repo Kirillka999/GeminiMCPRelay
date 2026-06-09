@@ -155,7 +155,7 @@ class MyAgentInterceptor(ToolInterceptor):
         
         # Modify arguments on the fly
         if tool_call.name == "calculate_expression":
-            if "dangerous_op" in tool_call.args.get("expression", ""):
+            if "dangerous_op" in tool_call.args.get("expr", ""):
                 # Bypass execution entirely and return a safe mocked result
                 return {"result": "Operation blocked for security reasons"}
                 
