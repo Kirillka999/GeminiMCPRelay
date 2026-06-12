@@ -1,0 +1,11 @@
+services:
+  gemini-mcp-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gemini-mcp-relay
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_BASE_URL=${GEMINI_BASE_URL}
+    restart: unless-stopped

@@ -218,7 +218,25 @@ gemini-mcp-relay --port 8000
 ```
 The server is now running and fully emulates the Google API.
 
-### 2. Connect from any Client
+### 2. Run with Docker & Docker Compose
+
+Alternatively, you can run the standalone server in a containerized environment using Docker.
+
+#### Using Docker Compose
+
+1. Create a `.env` file in the project root:
+   ```env
+   GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+   ```
+
+2. Start the container:
+   ```bash
+   docker-compose up --build
+   ```
+
+The server will build and start, listening on port `8000`. You can customize the base URL at runtime by changing the `GEMINI_BASE_URL` variable in your `.env` file or environment.
+
+### 3. Connect from any Client
 
 On the client side, replace the Google `base_url` with the proxy's address (`http://127.0.0.1:8000`) and pass your MCP configuration via the `X-MCP-Servers` HTTP header (encoded in Base64).
 
