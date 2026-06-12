@@ -231,7 +231,7 @@ Alternatively, you can run the standalone server in a containerized environment 
 
 2. Start the container:
    ```bash
-   docker-compose up --build
+   docker compose up --build
    ```
 
 The server will build and start, listening on port `8000`. You can customize the base URL at runtime by changing the `GEMINI_BASE_URL` variable in your `.env` file or environment.
