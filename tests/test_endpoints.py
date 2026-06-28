@@ -36,9 +36,43 @@ def test_auth_missing_key():
     assert "Missing API Key" in response.json()["detail"]
 
 def test_invalid_mcp_header():
+    # Pass a valid x-base-url so it gets past base_url validation to the mcp header validation.
+    base_url_b64 = base64.b64encode(b"https://example.com").decode("utf-8")
     response = client.post(
         "/v1beta/models/gemini-3.5-flash:generateContent", 
-        headers={"x-goog-api-key": "fake_key", "x-mcp-servers": "invalid_base64_string!"},
+        headers={
+            "x-goog-api-key": "fake_key", 
+            "x-mcp-servers": "invalid_base64_string!",
+            "x-base-url": base_url_b64
+        },
         json={"contents": []}
     )
     assert response.status_code == 400, f"Expected status 400, got {response.status_code}"
+
+def test_missing_base_url_header():
+    response = client.post(
+        "/v1beta/models/gemini-3.5-flash:generateContent", 
+        headers={"x-goog-api-key": "fake_key"},
+        json={"contents": []}
+    )
+    assert response.status_code == 400, f"Expected status 400, got {response.status_code}"
+    assert "Missing x-base-url header" in response.json()["detail"]
+
+def test_invalid_base_url_header():
+    response = client.post(
+        "/v1beta/models/gemini-3.5-flash:generateContent", 
+        headers={"x-goog-api-key": "fake_key", "x-base-url": "not-base-64!!"},
+        json={"contents": []}
+    )
+    assert response.status_code == 400, f"Expected status 400, got {response.status_code}"
+    assert "Failed to decode x-base-url header" in response.json()["detail"]
+
+def test_empty_base_url_header():
+    empty_b64 = base64.b64encode(b"   ").decode("utf-8")
+    response = client.post(
+        "/v1beta/models/gemini-3.5-flash:generateContent", 
+        headers={"x-goog-api-key": "fake_key", "x-base-url": empty_b64},
+        json={"contents": []}
+    )
+    assert response.status_code == 400, f"Expected status 400, got {response.status_code}"
+    assert "The decoded x-base-url cannot be empty" in response.json()["detail"]

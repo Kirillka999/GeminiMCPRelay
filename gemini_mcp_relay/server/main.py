@@ -30,10 +30,6 @@ def start():
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to.")
     args = parser.parse_args()
 
-    if not os.environ.get("GEMINI_BASE_URL"):
-        logger.error("Error: GEMINI_BASE_URL environment variable is not configured.")
-        raise ValueError("GEMINI_BASE_URL environment variable must be set to run the proxy server.")
-
     logger.info(f"👾 Starting Gemini MCP Relay on {args.host}:{args.port}...")
     uvicorn.run("gemini_mcp_relay.server.main:app", host=args.host, port=args.port)
 

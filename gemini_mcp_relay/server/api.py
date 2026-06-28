@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import base64
 import httpx
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
@@ -15,7 +16,18 @@ from gemini_mcp_relay.orchestrator import generate_content_loop, stream_generate
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-GEMINI_BASE_URL = os.environ.get("GEMINI_BASE_URL")
+def _get_base_url(request: Request) -> str:
+    base_url_header = request.headers.get("x-base-url")
+    if not base_url_header:
+        raise HTTPException(status_code=400, detail="Missing x-base-url header")
+    try:
+        decoded_bytes = base64.b64decode(base_url_header)
+        base_url = decoded_bytes.decode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to decode x-base-url header: {str(e)}")
+    if not base_url.strip():
+        raise HTTPException(status_code=400, detail="The decoded x-base-url cannot be empty")
+    return base_url.strip()
 
 @router.get("/v1/mcp/tools")
 async def list_mcp_tools(request: Request):
@@ -39,7 +51,7 @@ async def list_mcp_tools(request: Request):
         logger.error(f"Error fetching MCP tools: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-def _initialize_client_and_config(api_key: str, payload: dict, mcp_declarations: list) -> tuple:
+def _initialize_client_and_config(api_key: str, base_url: str, payload: dict, mcp_declarations: list) -> tuple:
     contents, config = parse_request_payload(payload)
 
     if mcp_declarations:
@@ -48,7 +60,7 @@ def _initialize_client_and_config(api_key: str, payload: dict, mcp_declarations:
             config.tools = []
         config.tools.append(mcp_tool)
 
-    http_opts = types.HttpOptions(base_url=GEMINI_BASE_URL) if GEMINI_BASE_URL else None
+    http_opts = types.HttpOptions(base_url=base_url) if base_url else None
     client = genai.Client(
         api_key=api_key,
         http_options=http_opts
@@ -60,6 +72,8 @@ async def handle_generate_content(model_name: str, request: Request):
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API Key")
 
+    base_url = _get_base_url(request)
+
     mcp_header = request.headers.get("x-mcp-servers")
     excluded_header = request.headers.get("x-mcp-excluded-tools")
     
@@ -68,7 +82,7 @@ async def handle_generate_content(model_name: str, request: Request):
         await manager.connect_all_from_config(parsed_config)
         
         payload = await request.json()
-        client, contents, config = _initialize_client_and_config(api_key, payload, manager.mcp_declarations)
+        client, contents, config = _initialize_client_and_config(api_key, base_url, payload, manager.mcp_declarations)
         
         response_obj = await generate_content_loop(client, model_name, contents, config, manager.adapters_map)
         from gemini_mcp_relay.formatters import convert_bytes_to_b64
@@ -88,6 +102,8 @@ async def handle_stream_generate_content(model_name: str, request: Request):
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API Key")
 
+    base_url = _get_base_url(request)
+
     mcp_header = request.headers.get("x-mcp-servers")
     excluded_header = request.headers.get("x-mcp-excluded-tools")
     
@@ -98,7 +114,7 @@ async def handle_stream_generate_content(model_name: str, request: Request):
         from gemini_mcp_relay.formatters import convert_bytes_to_b64
         try:
             await manager.connect_all_from_config(parsed_config)
-            client, contents, config = _initialize_client_and_config(api_key, payload, manager.mcp_declarations)
+            client, contents, config = _initialize_client_and_config(api_key, base_url, payload, manager.mcp_declarations)
             
             async for chunk_obj in stream_generate_content_loop(client, model_name, contents, config, manager.adapters_map):
                 chunk_dict = chunk_obj.model_dump(exclude_none=True, by_alias=True)
@@ -129,7 +145,7 @@ async def shutdown_event():
         _shared_proxy_client = None
 
 async def transparent_proxy(request: Request, full_path: str):
-    target_base = GEMINI_BASE_URL
+    target_base = _get_base_url(request)
     target_url = f"{target_base.rstrip('/')}/{full_path}"
     
     query_params = request.url.query

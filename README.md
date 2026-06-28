@@ -224,27 +224,24 @@ Alternatively, you can run the standalone server in a containerized environment 
 
 #### Using Docker Compose
 
-1. Create a `.env` file in the project root:
-   ```env
-   GEMINI_BASE_URL=https://generativelanguage.googleapis.com
-   ```
-
-2. Start the container:
+1. Start the container:
    ```bash
    docker compose up --build
    ```
 
-The server will build and start, listening on port `8000`. You can customize the base URL at runtime by changing the `GEMINI_BASE_URL` variable in your `.env` file or environment.
-
 ### 3. Connect from any Client
 
-On the client side, replace the Google `base_url` with the proxy's address (`http://127.0.0.1:8000`) and pass your MCP configuration via the `X-MCP-Servers` HTTP header (encoded in Base64).
+On the client side, replace the Google `base_url` with the proxy's address (`http://127.0.0.1:8000`). You must pass your target Gemini API base URL via the `X-Base-URL` HTTP header, and your MCP configuration via the `X-MCP-Servers` HTTP header (both encoded in Base64).
 
 **Python SDK Example:**
 ```python
 import base64
 import json
 from google import genai
+
+# Define your target Gemini API Base URL (encoded to Base64 to pass over HTTP)
+target_base_url = "https://generativelanguage.googleapis.com"
+base_url_header = base64.b64encode(target_base_url.encode("utf-8")).decode("utf-8")
 
 # Define your MCP servers
 mcp_config = {
@@ -253,7 +250,7 @@ mcp_config = {
     }
 }
 
-# Encode to Base64 to pass over HTTP
+# Encode MCP config to Base64 to pass over HTTP
 mcp_header = base64.b64encode(json.dumps(mcp_config).encode("utf-8")).decode("utf-8")
 
 # Connect to the local Proxy Server
@@ -261,7 +258,10 @@ client = genai.Client(
     api_key="YOUR_GEMINI_API_KEY",
     http_options={
         "base_url": "http://127.0.0.1:8000",
-        "headers": {"x-mcp-servers": mcp_header}
+        "headers": {
+            "x-base-url": base_url_header,
+            "x-mcp-servers": mcp_header
+        }
     }
 )
 
