@@ -9,8 +9,11 @@ services:
     networks:
       - default
       - server-net
+      - mcp-net
 
 networks:
   default:
   server-net:
     external: true
+  mcp-net:
+    name: mcp-net
