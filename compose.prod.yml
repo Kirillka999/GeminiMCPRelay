@@ -1,0 +1,16 @@
+# Production configuration
+# Usage: docker compose up (with COMPOSE_FILE=compose.prod.yml in .env)
+
+include:
+  - compose.yml
+
+services:
+  gemini-mcp-relay:
+    networks:
+      - default
+      - server-net
+
+networks:
+  default:
+  server-net:
+    external: true
