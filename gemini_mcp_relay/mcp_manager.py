@@ -239,7 +239,7 @@ class MCPConnectionManager:
             tools_response = await asyncio.wait_for(session.list_tools(), timeout=20.0)
             state.cached_tools = tools_response.tools
             
-            capabilities = session.get_server_capabilities()
+            capabilities = session.server_capabilities
             has_resources = bool(capabilities and getattr(capabilities, "resources", None))
             state.has_list = has_resources
             state.has_read = has_resources
