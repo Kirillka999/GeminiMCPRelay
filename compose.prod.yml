@@ -6,6 +6,8 @@ include:
 
 services:
   gemini-mcp-relay:
+    ports: !reset []
+    restart: always
     networks:
       - default
       - server-net
