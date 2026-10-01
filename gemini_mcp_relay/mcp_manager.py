@@ -46,10 +46,10 @@ class MCPServerAdapter:
                         "uri": str(r.uri),
                         "name": getattr(r, "name", ""),
                         "description": r.description or "",
-                        "mimeType": r.mimeType or ""
+                        "mimeType": r.mime_type or ""
                     })
                 return "result", {"result": all_resources}
-                
+
             elif gemini_name == self.read_resource_tool_name:
                 uri = call.args.get("uri")
                 if not uri:
@@ -60,7 +60,7 @@ class MCPServerAdapter:
                     if hasattr(content, "text") and content.text:
                         texts.append(content.text)
                     elif hasattr(content, "blob") and content.blob:
-                        texts.append(f"[Binary Blob: {getattr(content, 'mimeType', 'unknown')}]")
+                        texts.append(f"[Binary Blob: {getattr(content, 'mime_type', 'unknown')}]")
                 final_val = "\n".join(texts)
                 return "result", {"result": final_val}
                 

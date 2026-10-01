@@ -9,8 +9,8 @@ description = "Google GenAI SDK wrapper for integrating the Model Context Protoc
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "google-genai>=1.73.1",
-    "mcp>=1.27.0",
+    "google-genai==1.73.1",
+    "mcp==2.2.0",
     "pydantic>=2.13.3",
 ]
 
