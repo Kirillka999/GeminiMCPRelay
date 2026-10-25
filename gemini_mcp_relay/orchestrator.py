@@ -145,10 +145,13 @@ async def generate_content_loop(
                 ]
             )
             
-        response_parts = []
-        for fc in response.function_calls:
-            part = await execute_single_tool(fc, adapters_map, local_tools, interceptor)
-            response_parts.append(part)
+        if response.function_calls:
+            response_parts = list(await asyncio.gather(*(
+                execute_single_tool(fc, adapters_map, local_tools, interceptor)
+                for fc in response.function_calls
+            )))
+        else:
+            response_parts = []
                 
         current_contents.append(types.Content(role="user", parts=response_parts))
         accumulated_parts.extend(response_parts)
@@ -224,10 +227,13 @@ async def stream_generate_content_loop(
             
         current_contents.append(types.Content(role="model", parts=model_parts_this_turn))
         
-        response_parts = []
-        for fc in function_calls_to_process:
-            part = await execute_single_tool(fc, adapters_map, local_tools, interceptor)
-            response_parts.append(part)
+        if function_calls_to_process:
+            response_parts = list(await asyncio.gather(*(
+                execute_single_tool(fc, adapters_map, local_tools, interceptor)
+                for fc in function_calls_to_process
+            )))
+        else:
+            response_parts = []
         
         current_contents.append(types.Content(role="user", parts=response_parts))
         

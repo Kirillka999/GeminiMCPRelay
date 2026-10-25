@@ -2,12 +2,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY pyproject.toml README.md /app/
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-COPY gemini_mcp_relay /app/gemini_mcp_relay/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir .[server]
+COPY . /app
+
+RUN pip install --no-cache-dir ".[server]"
 
 EXPOSE 8000
 
-ENTRYPOINT ["gemini-mcp-relay", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "gemini_mcp_relay.server.main", "--host", "0.0.0.0", "--port", "8000"]
