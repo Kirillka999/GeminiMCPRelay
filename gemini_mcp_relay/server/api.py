@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import base64
+import asyncio
 import httpx
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
@@ -97,6 +98,35 @@ async def handle_generate_content(model_name: str, request: Request):
     finally:
         await manager.close()
 
+async def with_heartbeat(generator, interval: float = 10.0):
+    """Wraps an async generator to yield SSE comment pings (: ping\\n\\n) if no data is produced for interval seconds."""
+    queue: asyncio.Queue = asyncio.Queue()
+    done = object()
+
+    async def producer():
+        try:
+            async for item in generator:
+                await queue.put(item)
+        except Exception as e:
+            await queue.put(e)
+        finally:
+            await queue.put(done)
+
+    task = asyncio.create_task(producer())
+
+    while True:
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=interval)
+            if item is done:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+        except asyncio.TimeoutError:
+            yield ": ping\n\n"
+
+    await task
+
 async def handle_stream_generate_content(model_name: str, request: Request):
     api_key = request.headers.get("x-goog-api-key")
     if not api_key:
@@ -127,7 +157,7 @@ async def handle_stream_generate_content(model_name: str, request: Request):
         finally:
             await manager.close()
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(with_heartbeat(event_generator(), interval=10.0), media_type="text/event-stream")
 
 _shared_proxy_client: httpx.AsyncClient | None = None
 
