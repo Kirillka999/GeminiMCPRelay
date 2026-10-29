@@ -80,7 +80,7 @@ async def handle_generate_content(model_name: str, request: Request):
     
     manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
     try:
-        await manager.connect_all_from_config(parsed_config)
+        await manager.connect_all_from_config(parsed_config, ignore_connection_errors=True)
         
         payload = await request.json()
         client, contents, config = _initialize_client_and_config(api_key, base_url, payload, manager.mcp_declarations)
@@ -143,7 +143,7 @@ async def handle_stream_generate_content(model_name: str, request: Request):
         manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
         from gemini_mcp_relay.formatters import convert_bytes_to_b64
         try:
-            await manager.connect_all_from_config(parsed_config)
+            await manager.connect_all_from_config(parsed_config, ignore_connection_errors=True)
             client, contents, config = _initialize_client_and_config(api_key, base_url, payload, manager.mcp_declarations)
             
             async for chunk_obj in stream_generate_content_loop(client, model_name, contents, config, manager.adapters_map):

@@ -410,6 +410,9 @@ class MCPConnectionManager:
         mcp_type = config.get("type")
         headers = config.get("headers", {})
 
+        target_url = url or httpUrl
+        logger.info(f"Connecting to MCP server '{name}' (type={mcp_type or 'http'}) at: {target_url}")
+
         if httpUrl:
             logger.warning(f"MCP server '{name}': 'httpUrl' is deprecated. Please migrate to 'url' with 'type: \"http\"'.")
             client = httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(5.0, read=300.0))
