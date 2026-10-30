@@ -80,7 +80,7 @@ async def handle_generate_content(model_name: str, request: Request):
     
     manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
     try:
-        await manager.connect_all_from_config(parsed_config)
+        await manager.connect_all_from_config(parsed_config, ignore_connection_errors=True)
         
         payload = await request.json()
         client, contents, config = _initialize_client_and_config(api_key, base_url, payload, manager.mcp_declarations)
@@ -91,10 +91,18 @@ async def handle_generate_content(model_name: str, request: Request):
         return convert_bytes_to_b64(response_dict)
     except Exception as e:
         logger.error(f"Error during generation: {e}", exc_info=True)
-        # re-raise HTTP exceptions (e.g. from manager.connect)
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "candidates": [
+                {
+                    "index": 0,
+                    "finishReason": "STOP",
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": f"⚠️ **Error:** {str(e)}"}]
+                    }
+                }
+            ]
+        }
     finally:
         await manager.close()
 
@@ -143,7 +151,7 @@ async def handle_stream_generate_content(model_name: str, request: Request):
         manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header, excluded_header)
         from gemini_mcp_relay.formatters import convert_bytes_to_b64
         try:
-            await manager.connect_all_from_config(parsed_config)
+            await manager.connect_all_from_config(parsed_config, ignore_connection_errors=True)
             client, contents, config = _initialize_client_and_config(api_key, base_url, payload, manager.mcp_declarations)
             
             async for chunk_obj in stream_generate_content_loop(client, model_name, contents, config, manager.adapters_map):
@@ -152,6 +160,19 @@ async def handle_stream_generate_content(model_name: str, request: Request):
                 yield f"data: {json.dumps(chunk_dict, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.error(f"Error during streaming generation: {e}", exc_info=True)
+            synthetic_error_chunk = {
+                "candidates": [
+                    {
+                        "index": 0,
+                        "finishReason": "STOP",
+                        "content": {
+                            "role": "model",
+                            "parts": [{"text": f"\n\n⚠️ **Error:** {str(e)}"}]
+                        }
+                    }
+                ]
+            }
+            yield f"data: {json.dumps(synthetic_error_chunk, ensure_ascii=False)}\n\n"
             error_json = {"error": {"code": 500, "message": str(e), "status": "INTERNAL"}}
             yield f"data: {json.dumps(error_json, ensure_ascii=False)}\n\n"
         finally:

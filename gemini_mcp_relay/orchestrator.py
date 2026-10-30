@@ -37,7 +37,11 @@ async def execute_single_tool(
     if not real_call_skipped:
         adapter = adapters_map.get(fc.name)
         if adapter:
-            _, response_dict = await adapter.call_tool_raw(fc)
+            try:
+                _, response_dict = await adapter.call_tool_raw(fc)
+            except Exception as e:
+                logger.error(f"Error calling MCP tool '{fc.name}': {e}", exc_info=True)
+                response_dict = {"error": f"MCP tool execution failed: {str(e)}"}
         elif fc.name in local_tools:
             func = local_tools[fc.name]
             args = convert_number_values_for_function_call_args(fc.args) if fc.args else {}
@@ -101,11 +105,27 @@ async def generate_content_loop(
     max_retries = 5
     
     while True:
-        response = await client.aio.models.generate_content(
-            model=model_name,
-            contents=current_contents,
-            config=config
-        )
+        try:
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=current_contents,
+                config=config
+            )
+        except Exception as e:
+            logger.error(f"Error calling Gemini generate_content: {e}", exc_info=True)
+            accumulated_parts.append(types.Part.from_text(text=f"\n\n⚠️ **Error generating response:** {str(e)}"))
+            return types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        index=0,
+                        finish_reason=types.FinishReason.STOP,
+                        content=types.Content(
+                            role="model",
+                            parts=accumulated_parts
+                        )
+                    )
+                ]
+            )
         
         # Workaround for Gemini empty text response bug
         is_empty_response = False
@@ -185,23 +205,40 @@ async def stream_generate_content_loop(
     max_retries = 5
     
     while True:
-        response_stream = await client.aio.models.generate_content_stream(
-            model=model_name,
-            contents=current_contents,
-            config=config
-        )
-        
-        function_calls_to_process = []
-        model_parts_this_turn = []
-        chunks_this_turn = []
-        
-        async for chunk in response_stream:
-            chunks_this_turn.append(chunk)
-            if chunk.candidates and chunk.candidates[0].content and chunk.candidates[0].content.parts:
-                model_parts_this_turn.extend(chunk.candidates[0].content.parts)
+        try:
+            response_stream = await client.aio.models.generate_content_stream(
+                model=model_name,
+                contents=current_contents,
+                config=config
+            )
             
-            if chunk.function_calls:
-                function_calls_to_process.extend(chunk.function_calls)
+            function_calls_to_process = []
+            model_parts_this_turn = []
+            chunks_this_turn = []
+            
+            async for chunk in response_stream:
+                chunks_this_turn.append(chunk)
+                if chunk.candidates and chunk.candidates[0].content and chunk.candidates[0].content.parts:
+                    model_parts_this_turn.extend(chunk.candidates[0].content.parts)
+                
+                if chunk.function_calls:
+                    function_calls_to_process.extend(chunk.function_calls)
+        except Exception as e:
+            logger.error(f"Error calling Gemini generate_content_stream: {e}", exc_info=True)
+            error_chunk = types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        index=0,
+                        finish_reason=types.FinishReason.STOP,
+                        content=types.Content(
+                            role="model",
+                            parts=[types.Part.from_text(text=f"\n\n⚠️ **Error generating response:** {str(e)}")]
+                        )
+                    )
+                ]
+            )
+            yield error_chunk
+            return
 
         # Workaround for Gemini empty text response bug
         is_empty_response = False
