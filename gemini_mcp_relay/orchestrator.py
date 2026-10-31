@@ -264,26 +264,27 @@ async def stream_generate_content_loop(
             
         current_contents.append(types.Content(role="model", parts=model_parts_this_turn))
         
+        # Execute tools in parallel and stream results immediately as each one completes (asyncio.as_completed)
+        response_parts = []
         if function_calls_to_process:
-            response_parts = list(await asyncio.gather(*(
-                execute_single_tool(fc, adapters_map, local_tools, interceptor)
+            tasks = [
+                asyncio.create_task(execute_single_tool(fc, adapters_map, local_tools, interceptor))
                 for fc in function_calls_to_process
-            )))
-        else:
-            response_parts = []
+            ]
+            for fut in asyncio.as_completed(tasks):
+                single_part = await fut
+                response_parts.append(single_part)
+                # Yield synthetic chunk immediately with this individual tool result
+                yield types.GenerateContentResponse(
+                    candidates=[
+                        types.Candidate(
+                            index=0,
+                            content=types.Content(
+                                role="model",
+                                parts=[single_part]
+                            )
+                        )
+                    ]
+                )
         
         current_contents.append(types.Content(role="user", parts=response_parts))
-        
-        # Yield synthetic chunk with tool results so the client SDK can see them
-        synthetic_chunk = types.GenerateContentResponse(
-            candidates=[
-                types.Candidate(
-                    index=0,
-                    content=types.Content(
-                        role="model",
-                        parts=response_parts
-                    )
-                )
-            ]
-        )
-        yield synthetic_chunk
