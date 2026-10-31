@@ -4,15 +4,17 @@ import logging
 import base64
 import asyncio
 import httpx
-from fastapi import APIRouter, Request, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from google import genai
 from google.genai import types
 
 from gemini_mcp_relay.mcp_manager import MCPConnectionManager
-from gemini_mcp_relay.formatters import parse_request_payload
+from gemini_mcp_relay.formatters import parse_request_payload, convert_bytes_to_b64
 from gemini_mcp_relay.orchestrator import generate_content_loop, stream_generate_content_loop
+from gemini_mcp_relay.server.task_store import task_store, BufferedTask
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -244,6 +246,165 @@ async def transparent_proxy(request: Request, full_path: str):
         if isinstance(e, HTTPException):
             raise
         raise HTTPException(status_code=502, detail=f"Bad Gateway: {str(e)}")
+
+async def _run_background_generation(
+    task: BufferedTask,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    mcp_header: Optional[str],
+    excluded_header: Optional[str],
+    payload: dict
+):
+    """Executes the AI model and tool calling in background, writing chunks to the task buffer."""
+    manager, parsed_config = MCPConnectionManager.from_http_headers(mcp_header or "", excluded_header or "")
+    try:
+        await manager.connect_all_from_config(parsed_config, ignore_connection_errors=True)
+        client, contents, config = _initialize_client_and_config(api_key, base_url, payload, manager.mcp_declarations)
+
+        async for chunk_obj in stream_generate_content_loop(client, model_name, contents, config, manager.adapters_map):
+            chunk_dict = chunk_obj.model_dump(exclude_none=True, by_alias=True)
+            convert_bytes_to_b64(chunk_dict)
+            task.add_chunk(chunk_dict)
+        
+        task.complete()
+        logger.info(f"✅ [TaskStore] Task '{task.task_id}' finished successfully ({len(task.chunks)} chunks cached)")
+    except Exception as e:
+        logger.error(f"❌ [TaskStore] Task '{task.task_id}' failed: {e}", exc_info=True)
+        err_msg = str(e)
+        synthetic_error_chunk = {
+            "candidates": [
+                {
+                    "index": 0,
+                    "finishReason": "STOP",
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": f"\n\n⚠️ **Error:** {err_msg}"}]
+                    }
+                }
+            ]
+        }
+        task.add_chunk(synthetic_error_chunk)
+        task.fail(err_msg)
+    finally:
+        await manager.close()
+
+
+@router.websocket("/ws/generate")
+async def websocket_generate(websocket: WebSocket):
+    """
+    WebSocket generation endpoint with resilient reconnection and 1-hour buffer preservation.
+    Even if the client disconnects, generation proceeds in the background. Client can reconnect
+    with the same task_id / turn_id and resume receiving buffered chunks.
+    """
+    await websocket.accept()
+    logger.info("🔌 WebSocket client connected to /ws/generate")
+
+    task_id = "unknown"
+    try:
+        # 1. Read initial initiation message
+        init_data = await websocket.receive_json()
+        action = init_data.get("action", "start")
+        task_id = init_data.get("task_id") or init_data.get("turn_id")
+
+        if not task_id:
+            await websocket.send_json({"type": "error", "message": "Missing 'task_id' or 'turn_id'"})
+            await websocket.close(code=1008)
+            return
+
+        task = await task_store.get_or_create(task_id)
+
+        if action == "start" and len(task.chunks) == 0 and not task.is_completed:
+            # New task: extract parameters and launch background worker
+            api_key = init_data.get("api_key")
+            base_url = init_data.get("base_url") or "https://universal-gateway.ainetwork.qzz.io"
+            model_name = init_data.get("model_name", "gemini-smartest")
+            mcp_header = init_data.get("mcp_servers")
+            excluded_header = init_data.get("mcp_excluded_tools")
+            payload = init_data.get("payload", {})
+
+            if not api_key:
+                await websocket.send_json({"type": "error", "message": "Missing 'api_key'"})
+                await websocket.close(code=1008)
+                return
+
+            # Start detached background execution
+            asyncio.create_task(
+                _run_background_generation(
+                    task=task,
+                    api_key=api_key,
+                    base_url=base_url,
+                    model_name=model_name,
+                    mcp_header=mcp_header,
+                    excluded_header=excluded_header,
+                    payload=payload
+                )
+            )
+
+        # 2. Concurrently stream chunks to client while listening for ACK / ping messages
+        last_sent_index = int(init_data.get("resume_from_index", 0))
+
+        async def send_stream():
+            nonlocal last_sent_index
+            while True:
+                # Send all newly available chunks
+                while last_sent_index < len(task.chunks):
+                    chunk = task.chunks[last_sent_index]
+                    await websocket.send_json({
+                        "type": "chunk",
+                        "task_id": task_id,
+                        "index": last_sent_index,
+                        "data": chunk
+                    })
+                    last_sent_index += 1
+
+                if task.is_completed and last_sent_index >= len(task.chunks):
+                    await websocket.send_json({
+                        "type": "done",
+                        "task_id": task_id,
+                        "total_chunks": len(task.chunks),
+                        "error": task.error
+                    })
+                    # Keep sender alive waiting for final ack
+                    while not task.is_acked_by_client:
+                        await asyncio.sleep(0.1)
+                    break
+
+                # Wait for next chunk event or completion
+                await task.update_event.wait()
+
+        # Start sender task
+        sender_task = asyncio.create_task(send_stream())
+
+        # Let receiver listen until client sends final ACK or disconnects
+        try:
+            # Reset client ack on new session/reconnection
+            task.is_acked_by_client = False
+            while not task.is_acked_by_client:
+                msg = await websocket.receive_json()
+                msg_type = msg.get("type") or msg.get("action")
+                if msg_type == "ack":
+                    chunk_idx = msg.get("index")
+                    final = msg.get("final", False)
+                    task.acknowledge(chunk_idx, final=final)
+                    if final:
+                        logger.info(f"💌 [TaskStore] Final ACK received from client for task '{task_id}'")
+                        break
+                elif msg_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+            
+            # Allow sender task to finish gracefully
+            await asyncio.wait_for(sender_task, timeout=2.0)
+        except (WebSocketDisconnect, asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        finally:
+            sender_task.cancel()
+
+    except WebSocketDisconnect:
+        logger.info(f"🔌 WebSocket disconnected for task '{task_id}'. Task continues running in background for 1 hour.")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}", exc_info=True)
+
 
 @router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
 async def proxy_gateway(request: Request, full_path: str):
